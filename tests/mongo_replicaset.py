@@ -243,7 +243,7 @@ def waitForRSStatus(client, status=[1], timeout=60, verbose=0):
                 if ((numberOfPrimary != 1 and numberOfSecondary > 0) or
                         numberOfPrimary > 1):
                     okay = False
-                if verbose >= 2:
+                if verbose >= 0:  # ##DWM:: >= 2
                     print ([memb['state'] for memb in stat['members']],
                            status, numberOfPrimary, numberOfSecondary)
                 if okay:
