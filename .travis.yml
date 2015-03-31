@@ -18,6 +18,8 @@ before_install:
     # download VTK
     - wget http://midas3.kitware.com/midas/download/bitstream/366970/vtk-precise64-118242.tar.gz -O vtk-precise64.tar.gz
     - tar xzvf vtk-precise64.tar.gz -C ~
+    - export PYTHONPATH=~/vtk-precise64/lib/python2.7/site-packages:~/vtk-precise64/lib
+    - export LD_LIBRARY_PATH=~/vtk-precise64/lib
     # install R
     #- apt-get install zlib1g-dev 
     #- apt-get install libgsl0-dev
@@ -25,7 +27,7 @@ before_install:
     #- apt-key adv --keyserver keyserver.ubuntu.com --recv-keys E084DAB9
     #- apt-get update
     #- apt-get install r-base-dev zlib1g-dev libgsl0-dev
-    - "[ ! -d ${R_LIBS_USER} ] && mkdir ${R_LIBS_USER}"
+    #- "[ ! -d ${R_LIBS_USER} ] && mkdir ${R_LIBS_USER}"
     - R --version
     - R -e '.libPaths(); sessionInfo()'
     # install R packages
