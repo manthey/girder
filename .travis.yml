@@ -15,6 +15,23 @@ before_install:
     - vmstat
     #- python scripts/vmtest.py
 
+    # download VTK
+    - wget http://midas3.kitware.com/midas/download/bitstream/366970/vtk-precise64-118242.tar.gz -O vtk-precise64.tar.gz
+    - tar xzvf vtk-precise64.tar.gz -C ~
+    # install R
+    #- apt-get install zlib1g-dev 
+    #- apt-get install libgsl0-dev
+    #- apt-add-repository -y "deb http://cran.rstudio.com/bin/linux/ubuntu `lsb_release -cs`/"
+    #- apt-key adv --keyserver keyserver.ubuntu.com --recv-keys E084DAB9
+    #- apt-get update
+    #- apt-get install r-base-dev zlib1g-dev libgsl0-dev
+    - "[ ! -d ${R_LIBS_USER} ] && mkdir ${R_LIBS_USER}"
+    - R --version
+    - R -e '.libPaths(); sessionInfo()'
+    # install R packages
+    - Rscript -e 'install.packages(c("ape","geiger","nlme","devtools"), repos=c("http://cran.cnr.Berkeley.edu"))'
+    - R -e 'options(repos="http://cran.cnr.Berkeley.edu");library(devtools);install_github("cardoonTools", "hafen");install_github("aRbor", "arborworkflows")'
+
     - pushd "${HOME}"
     - curl "https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-${MONGO_VERSION}.tgz" | gunzip -c | tar x
     - cd mongodb-*/bin && export PATH="${PWD}:${PATH}"
@@ -29,23 +46,6 @@ before_install:
     - popd
     - cmake --version
 install:
-    # download VTK
-    - wget http://midas3.kitware.com/midas/download/bitstream/366970/vtk-precise64-118242.tar.gz -O vtk-precise64.tar.gz
-    - tar xzvf vtk-precise64.tar.gz -C ~
-    # install R
-    - apt-get install zlib1g-dev 
-    - apt-get install libgsl0-dev
-    - apt-add-repository -y "deb http://cran.rstudio.com/bin/linux/ubuntu `lsb_release -cs`/"
-    - apt-key adv --keyserver keyserver.ubuntu.com --recv-keys E084DAB9
-    - apt-get update
-    - apt-get install r-base-dev zlib1g-dev libgsl0-dev
-    - "[ ! -d ${R_LIBS_USER} ] && mkdir ${R_LIBS_USER}"
-    - R --version
-    - R -e '.libPaths(); sessionInfo()'
-    # install R packages
-    - Rscript -e 'install.packages(c("ape","geiger","nlme","devtools"), repos=c("http://cran.cnr.Berkeley.edu"))'
-    - R -e 'options(repos="http://cran.cnr.Berkeley.edu");library(devtools);install_github("cardoonTools", "hafen");install_github("aRbor", "arborworkflows")'
-
     - mkdir -p "${HOME}/.local/bin"
     - export PATH="${HOME}/.local/bin:${PATH}"
     - pip install --user -r requirements.txt -r requirements-dev.txt -r plugins/geospatial/requirements.txt -r plugins/metadata_extractor/requirements.txt
