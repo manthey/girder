@@ -26,6 +26,7 @@ import pymongo
 import sys
 import traceback
 import types
+import urlparse
 
 from . import docs
 from girder import events, logger
@@ -366,11 +367,13 @@ def _setCommonCORSHeaders(isOptions=False):
 
     :param isOptions: True if this call is from the options method
     """
-    origin = cherrypy.request.headers.get('origin', '').rstrip('/')
+    origin = cherrypy.request.headers.get('origin', '')
     if not origin:
         if isOptions:
             raise cherrypy.HTTPError(405)
         return
+    originparse = urlparse.urlparse(origin)
+    origin = '%s://%s' % (originparse.scheme, originparse.netloc)
     cherrypy.response.headers['Access-Control-Allow-Origin'] = origin
     cherrypy.response.headers['Vary'] = 'Origin'
     # Some requests do not require further checking
@@ -381,14 +384,19 @@ def _setCommonCORSHeaders(isOptions=False):
                 'multipart/form-data', 'text/plain'))):
         return
     cors = ModelImporter.model('setting').corsSettingsDict()
-    base = cherrypy.request.base.rstrip('/')
+    baseparse = urlparse.urlparse(cherrypy.request.base)
+    base = '%s://%s' % (baseparse.scheme, baseparse.netloc)
+    baselist = [base]
     # We want to handle X-Forwarded-Host be default
     altbase = cherrypy.request.headers.get('X-Forwarded-Host', '')
     if altbase:
-        altbase = '%s://%s' % (cherrypy.request.scheme, altbase)
-        logAltBase = ', forwarded base origin is ' + altbase
+        altbase = altbase.strip('/').split('/')[0]
+        baselist.append('%s://%s' % (cherrypy.request.scheme, altbase))
+        logAltBase = ', forwarded base origin is ' + baselist[-1]
+        if baseparse.scheme != cherrypy.request.scheme:
+            baselist.append('%s://%s' % (baseparse.scheme, altbase))
+            logAltBase += ', also allowing ' + baselist[-1]
     else:
-        altbase = base
         logAltBase = ''
     # If we don't have any allowed origins, return that OPTIONS isn't a
     # valid method.  If the request specified an origin, fail.
@@ -397,14 +405,14 @@ def _setCommonCORSHeaders(isOptions=False):
             logger.info('CORS 405 error: no allowed origins (request origin '
                         'is %s, base origin is %s%s', origin, base, logAltBase)
             raise cherrypy.HTTPError(405)
-        if origin not in (base, altbase):
+        if origin not in baselist:
             logger.info('CORS 403 error: no allowed origins (request origin '
                         'is %s, base origin is %s%s', origin, base, logAltBase)
             raise cherrypy.HTTPError(403)
         return
     # If this origin is not allowed, return an error
     if ('*' not in cors['allowOrigin'] and origin not in cors['allowOrigin']
-            and origin not in (base, altbase)):
+            and origin not in baselist):
         if isOptions:
             logger.info('CORS 405 error: origin not allowed (request origin '
                         'is %s, base origin is %s%s', origin, base, logAltBase)
@@ -413,7 +421,7 @@ def _setCommonCORSHeaders(isOptions=False):
                     'is %s, base origin is %s%s', origin, base, logAltBase)
         raise cherrypy.HTTPError(403)
     # If possible, send back the requesting origin.
-    if origin not in (base, altbase) and not isOptions:
+    if origin not in baselist and not isOptions:
         _validateCORSMethodAndHeaders(cors)
 
 
@@ -882,3 +890,30 @@ class Resource(ModelImporter):
         """
         if not hasattr(handler, 'accessLevel'):
             requireAdmin(getCurrentUser())
+
+
+# An instance of Resource that can be shared by boundHandlers for efficiency
+_sharedContext = Resource()
+
+
+class boundHandler(object):
+    """
+    This decorator allows unbound functions to be conveniently added as route
+    handlers to existing :py:class:`girder.api.rest.Resource` instances.
+    With no arguments, this uses a shared, generic ``Resource`` instance as the
+    context. If you need a specific instance, pass that as the ``ctx`` arg, for
+    instance if you need to reference the resource name or any other properties
+    specific to a Resource subclass.
+
+    Plugins that add new routes to existing API resources are encouraged to use
+    this to gain access to bound convenience methods like ``self.model``,
+    ``self.boolParam``, ``self.requireParams``, etc.
+    """
+    def __init__(self, ctx=None):
+        self.ctx = ctx or _sharedContext
+
+    def __call__(self, fn):
+        @functools.wraps(fn)
+        def wrapped(*args, **kwargs):
+            return fn(self.ctx, *args, **kwargs)
+        return wrapped
