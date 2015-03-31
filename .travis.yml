@@ -1,4 +1,4 @@
-language: cpp
+language: r
 
 sudo: false
 
@@ -27,7 +27,8 @@ before_install:
     #- apt-key adv --keyserver keyserver.ubuntu.com --recv-keys E084DAB9
     #- apt-get update
     #- apt-get install r-base-dev zlib1g-dev libgsl0-dev
-    #- "[ ! -d ${R_LIBS_USER} ] && mkdir ${R_LIBS_USER}"
+    - export R_LIBS_USER=~/R
+    - "[ ! -d ${R_LIBS_USER} ] && mkdir ${R_LIBS_USER}"
     - R --version
     - R -e '.libPaths(); sessionInfo()'
     # install R packages
