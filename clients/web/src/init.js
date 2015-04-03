@@ -18,9 +18,11 @@ _.extend(girder, {
     collections: {},
     views: {},
     apiRoot: $('#g-global-info-apiroot').text().replace(
-        '%HOST%', 'http://' + window.location.host),
+        '%HOST%', ''),
+//        '%HOST%', 'http://' + window.location.host),
     staticRoot: $('#g-global-info-staticroot').text().replace(
-        '%HOST%', 'http://' + window.location.host),
+        '%HOST%', ''),
+//        '%HOST%', 'http://' + window.location.host),
     currentUser: null,
     events: _.clone(Backbone.Events),
     uploadHandlers: {},
