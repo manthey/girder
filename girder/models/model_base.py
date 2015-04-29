@@ -383,7 +383,7 @@ class Model(ModelImporter):
         if objectId and type(id) is not ObjectId:
             try:
                 id = ObjectId(id)
-            except:
+            except Exception:
                 raise ValidationException('Invalid ObjectId: {}'.format(id),
                                           field='id')
         doc = self.collection.find_one({'_id': id}, fields=fields)
@@ -671,8 +671,8 @@ class AccessControlledModel(Model):
         list.
         """
         acList = {
-            'users': doc['access'].get('users', []),
-            'groups': doc['access'].get('groups', [])
+            'users': doc.get('access', {}).get('users', []),
+            'groups': doc.get('access', {}).get('groups', [])
         }
 
         for user in acList['users']:
@@ -849,7 +849,7 @@ class AccessControlledModel(Model):
                    sort=None, fields=None):
         """
         Custom override of Model.textSearch to also force permission-based
-        filtering. The parameters are the same as Model.textSearch, except:
+        filtering. The parameters are the same as Model.textSearch.
 
         :param user: The user to apply permission filtering for.
         """
