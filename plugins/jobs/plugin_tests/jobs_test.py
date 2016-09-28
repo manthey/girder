@@ -21,9 +21,11 @@ import time
 
 from tests import base
 from girder import events
+from girder.models.model_base import ValidationException
 
 
 JobStatus = None
+
 
 def setUpModule():
     base.enabledPlugins.append('jobs')
@@ -42,17 +44,19 @@ class JobsTestCase(base.TestCase):
         base.TestCase.setUp(self)
 
         self.users = [self.model('user').createUser(
-            'usr' + str(n), 'passwd', 'tst', 'usr', 'u{}@u.com'.format(n))
+            'usr' + str(n), 'passwd', 'tst', 'usr', 'u%d@u.com' % n)
             for n in range(3)]
 
     def testJobs(self):
         self.job = None
+
         def schedule(event):
             self.job = event.info
-            self.job['status'] = JobStatus.RUNNING
-            self.model('job', 'jobs').save(self.job)
-            self.assertEqual(self.job['args'], ('hello', 'world'))
-            self.assertEqual(self.job['kwargs'], {'a': 'b'})
+            if self.job['handler'] == 'my_handler':
+                self.job['status'] = JobStatus.RUNNING
+                self.job = self.model('job', 'jobs').save(self.job)
+                self.assertEqual(self.job['args'], ('hello', 'world'))
+                self.assertEqual(self.job['kwargs'], {'a': 'b'})
 
         events.bind('jobs.schedule', 'test', schedule)
 
@@ -70,7 +74,7 @@ class JobsTestCase(base.TestCase):
         self.assertEqual(self.job['status'], JobStatus.RUNNING)
 
         # Since the job is not public, user 2 should not have access
-        path = '/job/{}'.format(job['_id'])
+        path = '/job/%s' % job['_id']
         resp = self.request(path, user=self.users[2])
         self.assertStatus(resp, 403)
         resp = self.request(path, user=self.users[2], method='PUT')
@@ -95,24 +99,49 @@ class JobsTestCase(base.TestCase):
             'token': token['_id']
         })
         self.assertStatusOk(resp)
-        self.assertEqual(resp.json['log'], 'My log message\nappend message')
+        # We shouldn't get the log back in this case
+        self.assertNotIn('log', resp.json)
+
+        # Do a fetch on the job itself to get the log
+        resp = self.request(path, user=self.users[1])
+        self.assertStatusOk(resp)
+        self.assertEqual(
+            resp.json['log'], ['My log message\n', 'append message'])
 
         # Test overwriting the log and updating status
         resp = self.request(path, method='PUT', params={
-            'log': 'overwrite',
+            'log': 'overwritten log',
             'overwrite': 'true',
             'status': JobStatus.SUCCESS,
             'token': token['_id']
         })
         self.assertStatusOk(resp)
-        self.assertEqual(resp.json['log'], 'overwrite')
+        self.assertNotIn('log', resp.json)
         self.assertEqual(resp.json['status'], JobStatus.SUCCESS)
+
+        job = self.model('job', 'jobs').load(
+            job['_id'], force=True, includeLog=True)
+        self.assertEqual(job['log'], ['overwritten log'])
 
         # We should be able to delete the job as the user who created it
         resp = self.request(path, user=self.users[1], method='DELETE')
         self.assertStatusOk(resp)
         job = self.model('job', 'jobs').load(job['_id'], force=True)
         self.assertIsNone(job)
+
+    def testLegacyLogBehavior(self):
+        # Force save a job with a string log to simulate a legacy job record
+        job = self.model('job', 'jobs').createJob(
+            title='legacy', type='legacy', user=self.users[1], save=False)
+        job['log'] = 'legacy log'
+        job = self.model('job', 'jobs').save(job, validate=False)
+
+        self.assertEqual(job['log'], 'legacy log')
+
+        # Load the record, we should now get the log as a list
+        job = self.model('job', 'jobs').load(job['_id'], force=True,
+                                             includeLog=True)
+        self.assertEqual(job['log'], ['legacy log'])
 
     def testListJobs(self):
         job = self.model('job', 'jobs').createJob(
@@ -167,14 +196,14 @@ class JobsTestCase(base.TestCase):
         job['_some_other_field'] = 'foo'
         job = self.model('job', 'jobs').save(job)
 
-        resp = self.request('/job/{}'.format(job['_id']))
+        resp = self.request('/job/%s' % job['_id'])
         self.assertStatusOk(resp)
         self.assertTrue('created' in resp.json)
         self.assertTrue('_some_other_field' not in resp.json)
         self.assertTrue('kwargs' not in resp.json)
         self.assertTrue('args' not in resp.json)
 
-        resp = self.request('/job/{}'.format(job['_id']), user=self.users[0])
+        resp = self.request('/job/%s' % job['_id'], user=self.users[0])
         self.assertTrue('kwargs' in resp.json)
         self.assertTrue('args' in resp.json)
 
@@ -187,7 +216,7 @@ class JobsTestCase(base.TestCase):
 
         events.bind('jobs.filter', 'test', filterJob)
 
-        resp = self.request('/job/{}'.format(job['_id']))
+        resp = self.request('/job/%s' % job['_id'])
         self.assertStatusOk(resp)
         self.assertEqual(resp.json['_some_other_field'], 'bar')
         self.assertTrue('created' not in resp.json)
@@ -199,6 +228,7 @@ class JobsTestCase(base.TestCase):
         path = '/job/%s' % job['_id']
         resp = self.request(path)
         self.assertEqual(resp.json['progress'], None)
+        self.assertEqual(resp.json['timestamps'], [])
 
         resp = self.request(path, method='PUT', user=self.users[1], params={
             'progressTotal': 100,
@@ -214,6 +244,21 @@ class JobsTestCase(base.TestCase):
             'message': 'Started',
             'notificationId': None
         })
+
+        # The status update should make it so we now have a timestamp
+        self.assertEqual(len(resp.json['timestamps']), 1)
+        self.assertEqual(
+            resp.json['timestamps'][0]['status'], JobStatus.RUNNING)
+        self.assertIn('time', resp.json['timestamps'][0])
+
+        # If the status does not change on update, no timestamp should be added
+        resp = self.request(path, method='PUT', user=self.users[1], params={
+            'status': JobStatus.RUNNING
+        })
+        self.assertStatusOk(resp)
+        self.assertEqual(len(resp.json['timestamps']), 1)
+        self.assertEqual(
+            resp.json['timestamps'][0]['status'], JobStatus.RUNNING)
 
         # We passed notify=false, so we should not have any notifications
         resp = self.request(path='/notification/stream', method='GET',
@@ -244,7 +289,8 @@ class JobsTestCase(base.TestCase):
         self.assertEqual(statusNotify['type'], 'job_status')
         self.assertEqual(statusNotify['data']['_id'], str(job['_id']))
         self.assertEqual(int(statusNotify['data']['status']), JobStatus.ERROR)
-        self.assertTrue('kwargs' not in statusNotify['data'])
+        self.assertNotIn('kwargs', statusNotify['data'])
+        self.assertNotIn('log', statusNotify['data'])
 
         self.assertEqual(progressNotify['type'], 'progress')
         self.assertEqual(progressNotify['data']['title'], job['title'])
@@ -252,3 +298,113 @@ class JobsTestCase(base.TestCase):
         self.assertEqual(progressNotify['data']['state'], 'error')
         self.assertEqual(progressNotify['_id'],
                          str(job['progress']['notificationId']))
+
+    def testDotsInKwargs(self):
+        kwargs = {
+            '$key.with.dots': 'value',
+            'foo': [{
+                'moar.dots': True
+            }]
+        }
+        job = self.model('job', 'jobs').createJob(
+            title='dots', type='x', user=self.users[0], kwargs=kwargs)
+
+        # Make sure we can update a job and notification creation works
+        self.model('job', 'jobs').updateJob(
+            job, status=JobStatus.ERROR, notify=True)
+
+        self.assertEqual(job['kwargs'], kwargs)
+
+        resp = self.request('/job/%s' % job['_id'], user=self.users[0])
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json['kwargs'], kwargs)
+
+        job = self.model('job', 'jobs').load(job['_id'], force=True)
+        self.assertEqual(job['kwargs'], kwargs)
+        job = self.model('job', 'jobs').filter(job, self.users[0])
+        self.assertEqual(job['kwargs'], kwargs)
+        job = self.model('job', 'jobs').filter(job, self.users[1])
+        self.assertFalse('kwargs' in job)
+
+    def testLocalJob(self):
+        job = self.model('job', 'jobs').createLocalJob(
+            title='local', type='local', user=self.users[0], kwargs={
+                'hello': 'world'
+            }, module='plugin_tests.local_job_impl')
+
+        self.model('job', 'jobs').scheduleJob(job)
+
+        job = self.model('job', 'jobs').load(job['_id'], force=True,
+                                             includeLog=True)
+        self.assertEqual(job['log'], ['job ran!'])
+
+        job = self.model('job', 'jobs').createLocalJob(
+            title='local', type='local', user=self.users[0], kwargs={
+                'hello': 'world'
+            }, module='plugin_tests.local_job_impl', function='fail')
+
+        self.model('job', 'jobs').scheduleJob(job)
+
+        job = self.model('job', 'jobs').load(job['_id'], force=True,
+                                             includeLog=True)
+        self.assertEqual(job['log'], ['job failed'])
+
+    def testValidateCustomStatus(self):
+        jobModel = self.model('job', 'jobs')
+        job = jobModel.createJob(title='test', type='x', user=self.users[0])
+
+        def validateStatus(event):
+            if event.info == 1234:
+                event.preventDefault().addResponse(True)
+
+        with self.assertRaises(ValidationException):
+            jobModel.updateJob(job, status=1234)  # Should fail
+
+        with events.bound('jobs.status.validate', 'test', validateStatus):
+            jobModel.updateJob(job, status=1234)  # Should work
+
+            with self.assertRaises(ValidationException):
+                jobModel.updateJob(job, status=4321)  # Should fail
+
+    def testValidateCustomStrStatus(self):
+        jobModel = self.model('job', 'jobs')
+        job = jobModel.createJob(title='test', type='x', user=self.users[0])
+
+        def validateStatus(event):
+            states = ['a', 'b', 'c']
+
+            if event.info in states:
+                event.preventDefault().addResponse(True)
+
+        with self.assertRaises(ValidationException):
+            jobModel.updateJob(job, status='a')
+
+        with events.bound('jobs.status.validate', 'test', validateStatus):
+            jobModel.updateJob(job, status='a')
+            self.assertEqual(job['status'], 'a')
+
+        with self.assertRaises(ValidationException), \
+                events.bound('jobs.status.validate', 'test', validateStatus):
+            jobModel.updateJob(job, status='foo')
+
+    def testUpdateOtherFields(self):
+        jobModel = self.model('job', 'jobs')
+        job = jobModel.createJob(title='test', type='x', user=self.users[0])
+        job = jobModel.updateJob(job, otherFields={'other': 'fields'})
+        self.assertEqual(job['other'], 'fields')
+
+    def testCancelJob(self):
+        jobModel = self.model('job', 'jobs')
+        job = jobModel.createJob(title='test', type='x', user=self.users[0])
+        # add to the log
+        job = jobModel.updateJob(job, log='entry 1\n')
+        # Reload without the log
+        job = jobModel.load(id=job['_id'], force=True)
+        self.assertEqual(len(job.get('log', [])), 0)
+        # Cancel
+        job = jobModel.cancelJob(job)
+        self.assertEqual(job['status'], JobStatus.CANCELED)
+        # Reloading should still have the log and be canceled
+        job = jobModel.load(id=job['_id'], force=True, includeLog=True)
+        self.assertEqual(job['status'], JobStatus.CANCELED)
+        self.assertEqual(len(job.get('log', [])), 1)

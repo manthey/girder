@@ -19,13 +19,14 @@
 
 import cherrypy
 import os
+import six
 import smtplib
 
 from email.mime.text import MIMEText
 from mako.lookup import TemplateLookup
 from girder import events
 from girder import logger
-from girder.constants import SettingKey, ROOT_DIR
+from girder.constants import SettingKey, PACKAGE_DIR
 from .model_importer import ModelImporter
 
 
@@ -40,7 +41,7 @@ def getEmailUrlPrefix():
         host = '://'.join((cherrypy.request.scheme,
                            cherrypy.request.local.name))
         if cherrypy.request.local.port != 80:
-            host += ':{}'.format(cherrypy.request.local.port)
+            host += ':%d' % cherrypy.request.local.port
 
     return host
 
@@ -64,7 +65,7 @@ def renderTemplate(name, params=None):
     return template.render(**params)
 
 
-def sendEmail(to=None, subject=None, text=None, toAdmins=False):
+def sendEmail(to=None, subject=None, text=None, toAdmins=False, bcc=None):
     """
     Send an email. This builds the appropriate email object and then triggers
     an asynchronous event to send the email (handled in _sendmail).
@@ -78,25 +79,42 @@ def sendEmail(to=None, subject=None, text=None, toAdmins=False):
     :param toAdmins: To send an email to all site administrators, set this
         to True, which will override any "to" argument that was passed.
     :type toAdmins: bool
+    :param bcc: Recipient email address(es) that should be specified using the
+        Bcc header.
+    :type bcc: str, list/tuple, or None
     """
+    to = to or ()
+    bcc = bcc or ()
+
     if toAdmins:
         to = [u['email'] for u in ModelImporter.model('user').getAdmins()]
-    elif isinstance(to, basestring):
-        to = (to,)
+    else:
+        if isinstance(to, six.string_types):
+            to = (to,)
+        if isinstance(bcc, six.string_types):
+            bcc = (bcc,)
 
-    if not isinstance(to, (list, tuple)):
-        raise Exception('You must specify a "to" address or list of addresses '
-                        'or set toAdmins=True when calling sendEmail.')
+    if not to and not bcc:
+        raise Exception('You must specify email recipients via "to" or "bcc", '
+                        'or use toAdmins=True.')
 
-    msg = MIMEText(text, 'html')
+    if isinstance(text, six.text_type):
+        text = text.encode('utf8')
+
+    msg = MIMEText(text, 'html', 'UTF-8')
     msg['Subject'] = subject or '[no subject]'
-    msg['To'] = ', '.join(to)
+
+    if to:
+        msg['To'] = ', '.join(to)
+    if bcc:
+        msg['Bcc'] = ', '.join(bcc)
+
     msg['From'] = ModelImporter.model('setting').get(
-        SettingKey.EMAIL_FROM_ADDRESS, 'no-reply@girder.org')
+        SettingKey.EMAIL_FROM_ADDRESS, 'Girder <no-reply@girder.org>')
 
     events.daemon.trigger('_sendmail', info={
         'message': msg,
-        'recipients': to
+        'recipients': list(set(to) | set(bcc))
     })
 
 
@@ -116,19 +134,53 @@ def addTemplateDirectory(dir, prepend=False):
     _templateLookup.directories.insert(idx, dir)
 
 
+class _SMTPConnection(object):
+    def __init__(self, host, port=None, encryption=None,
+                 username=None, password=None):
+        self.host = host
+        self.port = port
+        self.encryption = encryption
+        self.username = username
+        self.password = password
+
+    def __enter__(self):
+        if self.encryption == 'ssl':
+            self.connection = smtplib.SMTP_SSL(self.host, self.port)
+        else:
+            self.connection = smtplib.SMTP(self.host, self.port)
+            if self.encryption == 'starttls':
+                self.connection.starttls()
+        if self.username and self.password:
+            self.connection.login(self.username, self.password)
+        return self
+
+    def send(self, fromAddress, toAddresses, message):
+        self.connection.sendmail(fromAddress, toAddresses, message)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.connection.quit()
+
+
 def _sendmail(event):
     msg = event.info['message']
-    smtpHost = ModelImporter.model('setting').get(SettingKey.SMTP_HOST,
-                                                  'localhost')
-    logger.info('Sending email to %s through %s', msg['To'], smtpHost)
+    recipients = event.info['recipients']
 
-    s = smtplib.SMTP(smtpHost)
-    s.sendmail(msg['From'], event.info['recipients'], msg.as_string())
-    s.quit()
+    setting = ModelImporter.model('setting')
+    smtp = _SMTPConnection(
+        host=setting.get(SettingKey.SMTP_HOST, 'localhost'),
+        port=setting.get(SettingKey.SMTP_PORT, None),
+        encryption=setting.get(SettingKey.SMTP_ENCRYPTION, 'none'),
+        username=setting.get(SettingKey.SMTP_USERNAME, None),
+        password=setting.get(SettingKey.SMTP_PASSWORD, None)
+    )
 
-    logger.info('Sent email to %s', msg['To'])
+    logger.info('Sending email to %s through %s',
+                ', '.join(recipients), smtp.host)
+
+    with smtp:
+        smtp.send(msg['From'], recipients, msg.as_string())
 
 
-_templateDir = os.path.join(ROOT_DIR, 'girder', 'mail_templates')
+_templateDir = os.path.join(PACKAGE_DIR, 'mail_templates')
 _templateLookup = TemplateLookup(directories=[_templateDir], collection_size=50)
 events.bind('_sendmail', 'core.email', _sendmail)

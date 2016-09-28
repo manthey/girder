@@ -18,7 +18,7 @@
 ###############################################################################
 
 from ..rest import Resource
-from ..describe import Description
+from ..describe import Description, describeRoute
 from girder.api import access
 from girder.constants import TokenScope
 
@@ -27,21 +27,30 @@ class Token(Resource):
     """API Endpoint for non-user tokens in the system."""
 
     def __init__(self):
+        super(Token, self).__init__()
         self.resourceName = 'token'
 
         self.route('DELETE', ('session',), self.deleteSession)
         self.route('GET', ('session',), self.getSession)
         self.route('GET', ('current',), self.currentSession)
+        self.route('GET', ('scopes',), self.listScopes)
 
     @access.public
+    @describeRoute(
+        Description('Retrieve the current session information.')
+        .responseClass('Token')
+    )
     def currentSession(self, params):
         token = self.getCurrentToken()
         return token
-    currentSession.description = (
-        Description('Retrieve the current session information.')
-        .responseClass('Token'))
 
     @access.public
+    @describeRoute(
+        Description('Get an anonymous session token for the system.')
+        .notes('If you are logged in, this will return a token associated '
+               'with that login.')
+        .responseClass('Token')
+    )
     def getSession(self, params):
         """
         Create an anonymous session.  Sends an auth cookie in the response on
@@ -59,20 +68,23 @@ class Token(Resource):
             'token': token['_id'],
             'expires': token['expires']
         }
-    getSession.description = (
-        Description('Get an anonymous session token for the system.')
-        .notes('If you are logged in, this will return a token associated '
-               'with that login.')
-        .responseClass('Token'))
 
     @access.token
+    @describeRoute(
+        Description('Remove a session from the system.')
+        .responseClass('Token')
+        .notes('Attempts to delete your authentication cookie.')
+    )
     def deleteSession(self, params):
         token = self.getCurrentToken()
         if token:
             self.model('token').remove(token)
         self.deleteAuthTokenCookie()
         return {'message': 'Session deleted.'}
-    deleteSession.description = (
-        Description('Remove a session from the system.')
-        .responseClass('Token')
-        .notes('Attempts to delete your authentication cookie.'))
+
+    @access.public
+    @describeRoute(
+        Description('List all token scopes available in the system.')
+    )
+    def listScopes(self, params):
+        return TokenScope.listScopes()

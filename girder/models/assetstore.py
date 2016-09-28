@@ -18,11 +18,10 @@
 ###############################################################################
 
 import datetime
-import pymongo
 
 from .model_base import Model, ValidationException, GirderException
 from girder.utility import assetstore_utilities
-from girder.constants import AssetstoreType
+from girder.constants import AssetstoreType, SortDir
 
 
 class Assetstore(Model):
@@ -79,7 +78,7 @@ class Assetstore(Model):
         # delete partial uploads before we delete the store.
         adapter = assetstore_utilities.getAssetstoreAdapter(assetstore)
         try:
-            adapter.untrackedUploads([], 'delete')
+            adapter.untrackedUploads([], delete=True)
         except ValidationException:
             # this assetstore is currently unreachable, so skip this step
             pass
@@ -89,7 +88,7 @@ class Assetstore(Model):
         # different assetstore to be the current one.
         current = self.findOne({'current': True})
         if current is None:
-            first = self.findOne(sort=[('created', pymongo.DESCENDING)])
+            first = self.findOne(sort=[('created', SortDir.DESCENDING)])
             if first is not None:
                 first['current'] = True
                 self.save(first)
@@ -120,12 +119,13 @@ class Assetstore(Model):
         assetstore['hasFiles'] = (self.model('file').findOne(
             {'assetstoreId': assetstore['_id']}) is not None)
 
-    def createFilesystemAssetstore(self, name, root):
+    def createFilesystemAssetstore(self, name, root, perms=None):
         return self.save({
             'type': AssetstoreType.FILESYSTEM,
             'created': datetime.datetime.utcnow(),
             'name': name,
-            'root': root
+            'root': root,
+            'perms': perms
         })
 
     def createGridFsAssetstore(self, name, db, mongohost=None,
@@ -140,13 +140,14 @@ class Assetstore(Model):
         })
 
     def createS3Assetstore(self, name, bucket, accessKeyId, secret, prefix='',
-                           service=''):
+                           service='', readOnly=False):
         return self.save({
             'type': AssetstoreType.S3,
             'created': datetime.datetime.utcnow(),
             'name': name,
             'accessKeyId': accessKeyId,
             'secret': secret,
+            'readOnly': readOnly,
             'prefix': prefix,
             'bucket': bucket,
             'service': service
@@ -164,3 +165,13 @@ class Assetstore(Model):
                 'girder.model.assetstore.no-current-assetstore')
 
         return current
+
+    def importData(self, assetstore, parent, parentType, params, progress,
+                   user, **kwargs):
+        """
+        Calls the importData method of the underlying assetstore adapter.
+        """
+        adapter = assetstore_utilities.getAssetstoreAdapter(assetstore)
+        return adapter.importData(
+            parent=parent, parentType=parentType, params=params,
+            progress=progress, user=user, **kwargs)

@@ -20,6 +20,7 @@
 import cherrypy
 import os
 import psutil
+import six
 import socket
 import threading
 import time
@@ -40,7 +41,8 @@ def _objectToDict(obj):
     return {key: getattr(obj, key) for key in dir(obj) if
             not key.startswith('_') and
             isinstance(getattr(obj, key),
-                       (int, long, float, basestring, tuple))}
+                       tuple([float, tuple] + list(six.string_types) +
+                             list(six.integer_types)))}
 
 
 def _computeSlowStatus(process, status, db):
@@ -113,7 +115,7 @@ def _computeSlowStatus(process, status, db):
 
 def getStatus(mode='basic', user=None):
     """
-    Get a dictionary of status information regarding the girder server.
+    Get a dictionary of status information regarding the Girder server.
 
     :param mode: 'basic' returns values available to any anonymous user.
         'quick' returns only values that are cheap to acquire.
@@ -122,7 +124,7 @@ def getStatus(mode='basic', user=None):
                  than basic mode.
     :returns: a status dictionary.
     """
-    isAdmin = (user is not None and user.get('admin', False) is True)
+    isAdmin = (user is not None and user['admin'])
 
     status = {}
     status['bootTime'] = psutil.boot_time()
@@ -135,7 +137,7 @@ def getStatus(mode='basic', user=None):
         status['swap'] = _objectToDict(psutil.swap_memory())
         status['cpuCount'] = psutil.cpu_count()
 
-        status['processMemory'] = _objectToDict(process.get_memory_info())
+        status['processMemory'] = _objectToDict(process.memory_info())
         status['processName'] = process.name()
         status['cmdline'] = process.cmdline()
         status['exe'] = process.exe()
@@ -195,13 +197,13 @@ class StatusMonitor(cherrypy.Tool):
         self.seenThreads = {}
 
     def callable(self):
-        threadId = threading._get_ident()
+        threadId = threading.current_thread().ident
         self.seenThreads[threadId] = {
             'start': cherrypy.response.time, 'url': cherrypy.url()}
 
     def unregister(self):
         """Unregister the current thread."""
-        threadID = threading._get_ident()
+        threadID = threading.current_thread().ident
         if threadID in self.seenThreads:
             self.seenThreads[threadID]['end'] = time.time()
 

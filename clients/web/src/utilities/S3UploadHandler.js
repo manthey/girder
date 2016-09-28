@@ -4,8 +4,8 @@
  * either the single-request or multi-chunk protocol depending on the size of
  * the file.
  *
- * The flow here is to make requests to girder for each required chunk of
- * the upload, which girder authorizes and signs using HMAC. Those signatures
+ * The flow here is to make requests to Girder for each required chunk of
+ * the upload, which Girder authorizes and signs using HMAC. Those signatures
  * are sent, along with the bytes, to the appropriate S3 bucket. For multi-
  * chunk uploads, one final request is required after all chunks have been
  * sent in order to create the final unified record in S3.
@@ -90,7 +90,7 @@
             };
 
             xhr.upload.addEventListener('progress', function (event) {
-                handler._xhrProgress.call(handler, event);
+                handler._xhrProgress(event);
             });
 
             xhr.addEventListener('error', function (event) {
@@ -149,7 +149,7 @@
             if (xhr.status === 200) {
                 handler.s3UploadId =
                     xhr.responseText.match(/<UploadId>(.*)<\/UploadId>/).pop();
-                handler._sendNextChunk.call(handler);
+                handler._sendNextChunk();
             } else {
                 handler.trigger('g:upload.error', {
                     message: 'Error while initializing multichunk S3 upload.',
@@ -170,7 +170,7 @@
 
     /**
      * Internal helper method used during multichunk upload protocol. This
-     * requests a signed chunk upload request from girder, then uses that
+     * requests a signed chunk upload request from Girder, then uses that
      * authorized request to send the chunk to S3.
      */
     prototype._sendNextChunk = function () {
@@ -179,7 +179,7 @@
             this.startByte + this.params.upload.s3.chunkLength);
         this.payloadLength = data.size;
 
-        // Get the authorized request from girder
+        // Get the authorized request from Girder
         girder.restRequest({
             path: 'file/chunk',
             type: 'POST',
@@ -187,7 +187,8 @@
                 offset: 0,
                 chunk: JSON.stringify({
                     s3UploadId: this.s3UploadId,
-                    partNumber: this.chunkN
+                    partNumber: this.chunkN,
+                    contentLength: this.payloadLength
                 }),
                 uploadId: this.params.upload._id
             },
@@ -210,9 +211,9 @@
                     handler.chunkN += 1;
 
                     if (handler.startByte < handler.params.file.size) {
-                        handler._sendNextChunk.call(handler);
+                        handler._sendNextChunk();
                     } else {
-                        handler._finalizeMultiChunkUpload.call(handler);
+                        handler._finalizeMultiChunkUpload();
                     }
                 } else {
                     handler.trigger('g:upload.error', {
@@ -223,7 +224,7 @@
             };
 
             xhr.upload.addEventListener('progress', function (event) {
-                handler._xhrProgress.call(handler, event);
+                handler._xhrProgress(event);
             });
 
             xhr.addEventListener('error', function (event) {
@@ -234,7 +235,7 @@
             });
 
             xhr.send(data);
-        }, this)).error(_.bind(function (resp) {
+        }, this)).error(_.bind(function () {
             this.trigger('g:upload.error', {
                 message: 'Error getting signed chunk request from Girder.'
             });

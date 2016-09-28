@@ -21,8 +21,8 @@ import cherrypy
 import json
 import time
 
-from ..describe import Description
-from ..rest import Resource
+from ..describe import Description, describeRoute
+from ..rest import Resource, setResponseHeader
 from girder.api import access
 
 # If no timeout param is passed to stream, we default to this value
@@ -37,15 +37,32 @@ def sseMessage(event):
     """
     Serializes an event into the server-sent events protocol.
     """
-    return 'data: {}\n\n'.format(json.dumps(event, default=str))
+    return 'data: %s\n\n' % json.dumps(event, default=str)
 
 
 class Notification(Resource):
     def __init__(self):
+        super(Notification, self).__init__()
         self.resourceName = 'notification'
         self.route('GET', ('stream',), self.stream)
 
+    @access.cookie
     @access.token
+    @describeRoute(
+        Description('Stream notifications for a given user via the SSE '
+                    'protocol.')
+        .notes('This uses long-polling to keep the connection open for '
+               'several minutes at a time (or longer) and should be requested '
+               'with an EventSource object or other SSE-capable client. '
+               '<p>Notifications are returned within a few seconds of when '
+               'they occur.  When no notification occurs for the timeout '
+               'duration, the stream is closed. '
+               '<p>This connection can stay open indefinitely long.')
+        .param('timeout', 'The duration without a notification before the '
+               'stream is closed.', dataType='integer', required=False)
+        .errorResponse()
+        .errorResponse('You are not logged in.', 403)
+    )
     def stream(self, params):
         """
         Streams notifications using the server-sent events protocol. Closes
@@ -59,8 +76,8 @@ class Notification(Resource):
         user = self.getCurrentUser()
         token = self.getCurrentToken()
 
-        cherrypy.response.headers['Content-Type'] = 'text/event-stream'
-        cherrypy.response.headers['Cache-Control'] = 'no-cache'
+        setResponseHeader('Content-Type', 'text/event-stream')
+        setResponseHeader('Cache-Control', 'no-cache')
 
         timeout = int(params.get('timeout', DEFAULT_STREAM_TIMEOUT))
 
@@ -82,18 +99,3 @@ class Notification(Resource):
 
                 time.sleep(wait)
         return streamGen
-    stream.cookieAuth = True
-    stream.description = (
-        Description('Stream notifications for a given user via the SSE '
-                    'protocol.')
-        .notes('This uses long-polling to keep the connection open for '
-               'several minutes at a time (or longer) and should be requested '
-               'with an EventSource object or other SSE-capable client. '
-               '<p>Notifications are returned within a few seconds of when '
-               'they occur.  When no notification occurs for the timeout '
-               'duration, the stream is closed. '
-               '<p>This connection can stay open indefinitely long.')
-        .param('timeout', 'The duration without a notification before the '
-               'stream is closed.', dataType='integer', required=False)
-        .errorResponse()
-        .errorResponse('You are not logged in.', 403))

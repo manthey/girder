@@ -18,8 +18,10 @@
 ###############################################################################
 
 import cherrypy
-from girder.constants import ROOT_DIR
 import os
+import six
+
+from girder.constants import PACKAGE_DIR
 
 
 def _mergeConfig(filename):
@@ -30,7 +32,7 @@ def _mergeConfig(filename):
     cherrypy._cpconfig.merge(cherrypy.config, filename)
     global_config = cherrypy.config.pop('global', {})
 
-    for option, value in global_config.iteritems():
+    for option, value in six.viewitems(global_config):
         cherrypy.config[option] = value
 
 
@@ -40,9 +42,9 @@ def _loadConfigsByPrecedent():
     """
     configPaths = []
     configPaths.append(
-        os.path.join(ROOT_DIR, 'girder', 'conf', 'girder.dist.cfg'))
+        os.path.join(PACKAGE_DIR, 'conf', 'girder.dist.cfg'))
     configPaths.append(
-        os.path.join(ROOT_DIR, 'girder', 'conf', 'girder.local.cfg'))
+        os.path.join(PACKAGE_DIR, 'conf', 'girder.local.cfg'))
     configPaths.append(
         os.path.join('/etc', 'girder.cfg'))
     configPaths.append(

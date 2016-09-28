@@ -23,12 +23,14 @@ import mock
 import os
 import shutil
 import sys
+import six
 
-# Need to set the environment variable before importing girder
-os.environ['GIRDER_PORT'] = os.environ.get('GIRDER_TEST_PORT', '20200')  # noqa
-
+from girder import config
 from tests import base
-from StringIO import StringIO
+from six import StringIO
+
+os.environ['GIRDER_PORT'] = os.environ.get('GIRDER_TEST_PORT', '20200')
+config.loadConfig()  # Must reload config to pickup correct port
 
 
 @contextlib.contextmanager
@@ -48,12 +50,23 @@ class SysExitException(Exception):
     pass
 
 
-def invokeCli(argv, username='', password=''):
+def invokeCli(argv, username='', password='', useApiUrl=False):
     """
-    Invoke the girder python client CLI with a set of arguments.
+    Invoke the Girder Python client CLI with a set of arguments.
     """
-    argsList = ['girder-client', '--port', os.environ['GIRDER_PORT'],
-                '--username', username, '--password', password] + list(argv)
+    if useApiUrl:
+        apiUrl = 'http://localhost:%s/api/v1' % os.environ['GIRDER_PORT']
+        argsList = ['girder-client', '--api-url', apiUrl]
+    else:
+        argsList = ['girder-client', '--port', os.environ['GIRDER_PORT']]
+
+    if username:
+        argsList += ['--username', username]
+    if password:
+        argsList += ['--password', password]
+
+    argsList += list(argv)
+
     exitVal = 0
     with mock.patch.object(sys, 'argv', argsList),\
             mock.patch('sys.exit', side_effect=SysExitException) as exit,\
@@ -89,8 +102,9 @@ class PythonCliTestCase(base.TestCase):
         self.user = self.model('user').createUser(
             firstName='First', lastName='Last', login='mylogin',
             password='password', email='email@email.com')
-        self.publicFolder = self.model('folder').childFolders(
-            parentType='user', parent=self.user, user=None, limit=1).next()
+        self.publicFolder = six.next(self.model('folder').childFolders(
+            parentType='user', parent=self.user, user=None, limit=1))
+        self.apiKey = self.model('api_key').createApiKey(self.user, name='')
 
         self.downloadDir = os.path.join(
             os.path.dirname(__file__), '_testDownload')
@@ -103,7 +117,6 @@ class PythonCliTestCase(base.TestCase):
 
     def testCliHelp(self):
         ret = invokeCli(())
-        self.assertIn('error: too few arguments', ret['stderr'])
         self.assertNotEqual(ret['exitVal'], 0)
 
         ret = invokeCli(('-h',))
@@ -111,67 +124,103 @@ class PythonCliTestCase(base.TestCase):
         self.assertEqual(ret['exitVal'], 0)
 
     def testUploadDownload(self):
-        localDir = os.path.dirname(__file__)
+        localDir = os.path.join(os.path.dirname(__file__), 'testdata')
         args = ['-c', 'upload', str(self.publicFolder['_id']), localDir]
-        flag = False
-        try:
+        with self.assertRaises(girder_client.HttpError):
             invokeCli(args)
-        except girder_client.AuthenticationError:
-            flag = True
 
-        self.assertTrue(flag)
+        with self.assertRaises(girder_client.HttpError):
+            invokeCli(['--api-key', '1234'] + args)
 
         # Test dry-run and blacklist options
-
-        ret = invokeCli(args + ['--dryrun', '--blacklist=cli_test.py'],
+        ret = invokeCli(args + ['--dryrun', '--blacklist=hello.txt'],
                         username='mylogin', password='password')
         self.assertEqual(ret['exitVal'], 0)
-        self.assertIn('Ignoring file cli_test.py as it is blacklisted',
+        self.assertIn('Ignoring file hello.txt as it is blacklisted',
                       ret['stdout'])
 
-        ret = invokeCli(args, username='mylogin', password='password')
+        ret = invokeCli(args, username='mylogin', password='password',
+                        useApiUrl=True)
         self.assertEqual(ret['exitVal'], 0)
-        self.assertIn(
-            'Creating Folder from tests/cases/py_client', ret['stdout'])
-        self.assertIn('Uploading Item from cli_test.py', ret['stdout'])
+        six.assertRegex(
+            self, ret['stdout'],
+            'Creating Folder from .*tests/cases/py_client/testdata')
+        self.assertIn('Uploading Item from hello.txt', ret['stdout'])
 
-        subfolder = self.model('folder').childFolders(
-            parent=self.publicFolder, parentType='folder', limit=1).next()
-        self.assertEqual(subfolder['name'], 'py_client')
+        subfolder = six.next(self.model('folder').childFolders(
+            parent=self.publicFolder, parentType='folder', limit=1))
+        self.assertEqual(subfolder['name'], 'testdata')
 
         items = list(self.model('folder').childItems(folder=subfolder))
 
         toUpload = list(os.listdir(localDir))
         self.assertEqual(len(toUpload), len(items))
 
-        downloadDir = os.path.join(localDir, '_testDownload')
+        downloadDir = os.path.join(os.path.dirname(localDir), '_testDownload')
 
         ret = invokeCli(('-c', 'download', str(subfolder['_id']), downloadDir),
                         username='mylogin', password='password')
         self.assertEqual(ret['exitVal'], 0)
         for downloaded in os.listdir(downloadDir):
+            if downloaded == '.girder_metadata':
+                continue
             self.assertIn(downloaded, toUpload)
 
         # Download again to same location, we should not get errors
         ret = invokeCli(('-c', 'download', str(subfolder['_id']), downloadDir),
                         username='mylogin', password='password')
         self.assertEqual(ret['exitVal'], 0)
-        self.assertEqual(ret['stderr'], '')
+
+        # Download again to same location, using path, we should not get errors
+        ret = invokeCli(('-c', 'download', '/user/mylogin/Public/testdata',
+                         downloadDir), username='mylogin', password='password')
+        self.assertEqual(ret['exitVal'], 0)
+
+        # Try uploading using API key
+        ret = invokeCli(['--api-key', self.apiKey['key']] + args)
+        self.assertEqual(ret['exitVal'], 0)
+        six.assertRegex(
+            self, ret['stdout'],
+            'Creating Folder from .*tests/cases/py_client/testdata')
+        self.assertIn('Uploading Item from hello.txt', ret['stdout'])
+
+        # Test localsync, it shouldn't touch files on 2nd pass
+        ret = invokeCli(('-c', 'localsync', str(subfolder['_id']),
+                         downloadDir), username='mylogin',
+                        password='password')
+        self.assertEqual(ret['exitVal'], 0)
+
+        old_mtimes = {}
+        for fname in os.listdir(downloadDir):
+            filename = os.path.join(downloadDir, fname)
+            old_mtimes[fname] = os.path.getmtime(filename)
+
+        ret = invokeCli(('-c', 'localsync', str(subfolder['_id']),
+                         downloadDir), username='mylogin',
+                        password='password')
+        self.assertEqual(ret['exitVal'], 0)
+
+        for fname in os.listdir(downloadDir):
+            if fname == '.girder_metadata':
+                continue
+            filename = os.path.join(downloadDir, fname)
+            self.assertEqual(os.path.getmtime(filename), old_mtimes[fname])
 
     def testLeafFoldersAsItems(self):
-        localDir = os.path.dirname(__file__)
+        localDir = os.path.join(os.path.dirname(__file__), 'testdata')
         args = ['-c', 'upload', str(self.publicFolder['_id']), localDir,
                 '--leaf-folders-as-items']
 
         ret = invokeCli(args, username='mylogin', password='password')
         self.assertEqual(ret['exitVal'], 0)
-        self.assertIn(
-            'Creating Item from folder tests/cases/py_client', ret['stdout'])
-        self.assertIn('Adding file __init__.py', ret['stdout'])
+        six.assertRegex(
+            self, ret['stdout'],
+            'Creating Item from folder .*tests/cases/py_client/testdata')
+        self.assertIn('Adding file world.txt', ret['stdout'])
 
         # Test re-use existing case
         args.append('--reuse')
         ret = invokeCli(args, username='mylogin', password='password')
         self.assertEqual(ret['exitVal'], 0)
-        self.assertIn('File cli_test.py already exists in parent Item',
+        self.assertIn('File hello.txt already exists in parent Item',
                       ret['stdout'])

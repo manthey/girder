@@ -95,7 +95,25 @@ girder.models.UserModel = girder.Model.extend({
             },
             type: 'PUT',
             error: null
-        }).done(_.bind(function (resp) {
+        }).done(_.bind(function () {
+            this.trigger('g:passwordChanged');
+        }, this)).error(_.bind(function (err) {
+            this.trigger('g:error', err);
+        }, this));
+    },
+
+    /**
+     * Change the password for another user (as an admin).
+     */
+    adminChangePassword: function (newPassword) {
+        girder.restRequest({
+            path: this.resourceName + '/' + this.id + '/password',
+            data: {
+                password: newPassword
+            },
+            type: 'PUT',
+            error: null
+        }).done(_.bind(function () {
             this.trigger('g:passwordChanged');
         }, this)).error(_.bind(function (err) {
             this.trigger('g:error', err);

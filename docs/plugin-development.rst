@@ -125,33 +125,35 @@ will default to being restricted to administrators.
 
 When you start the server, you may notice a warning message appears:
 ``WARNING: No description docs present for route GET item/:id/cat``. You
-can add self-describing API documentation to your route as in the following
+can add self-describing API documentation to your route using the
+``describeRoute`` decorator and ``Description`` class as in the following
 example: ::
 
-    from girder.api.describe import Description
+    from girder.api.describe import Description, describeRoute
     from girder.api import access
 
     @access.public
+    @describeRoute(
+        Description('Retrieve the cat for a given item.')
+        .param('id', 'The item ID', paramType='path')
+        .param('cat', 'The cat value.', required=False)
+        .errorResponse())
     def myHandler(id, params):
         return {
            'itemId': id,
            'cat': params.get('cat', 'No cat param passed')
         }
-    myHandler.description = (
-        Description('Retrieve the cat for a given item.')
-        .param('id', 'The item ID', paramType='path')
-        .param('cat', 'The cat value.', required=False)
-        .errorResponse())
+
 
 That will make your route automatically appear in the Swagger documentation
 and will allow users to interact with it via that UI. See the
 :ref:`RESTful API docs<restapi>` for more information about the Swagger page.
 
 If you are creating routes that you explicitly do not wish to be exposed in the
-Swagger documentation for whatever reason, you can set the handler's description
-to ``None``, and then no warning will appear. ::
+Swagger documentation for whatever reason, you can pass ``None`` to the
+``describeRoute`` decorator, and no warning will appear. ::
 
-    myHandler.description = None
+    @describeRoute(None)
 
 Adding a new resource type to the web API
 *****************************************
@@ -165,6 +167,7 @@ classes, and we can add it to the API in the ``load()`` method. ::
 
     class Cat(Resource):
         def __init__(self):
+            super(Cat, self).__init__()
             self.resourceName = 'cat'
 
             self.route('GET', (), self.findCat)
@@ -335,6 +338,14 @@ This event is always triggered asynchronously and is fired after a file has
 been uploaded. The file document that was created is passed in the event info.
 You can bind to this event using the identifier ``data.process``.
 
+*  **Before file move**
+
+The event ``model.upload.movefile`` is triggered when a file is about to be
+moved from one assetstore to another.  The event information is a dictionary
+containing ``file`` and ``assetstore`` with the current file document and the
+target assetstore document.  If ``preventDefault`` is called, the move will be
+cancelled.
+
 .. note:: If you anticipate your plugin being used as a dependency by other
    plugins, and want to potentially alert them of your own events, it can
    be worthwhile to trigger your own events from within the plugin. If you do
@@ -387,6 +398,18 @@ You can use all of the testing utilities provided by the ``base.TestCase`` class
 from core. You will also get coverage results for your plugin aggregated with
 the main Girder coverage results if coverage is enabled.
 
+Plugins can also use the external data interface provided by Girder as described
+in :ref:`use_external_data`.  For plugins, the data key files should be placed
+inside a directory called ``plugin_tests/data/``.  When referencing the
+files, they must be prefixed by your plugin name as follows
+
+.. code-block:: cmake
+
+    add_python_test(my_test EXTERNAL_DATA plugins/cats/test_file.txt)
+
+Then inside your unittest, the file will be available under the main data path
+as ``os.environ['GIRDER_TEST_DATA_PREFIX'] + '/plugins/cats/test_file.txt'``.
+
 Extending the Client-Side Application
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -435,6 +458,87 @@ that can be used to import content:
   plugin that doesn't fall into one of the above categories can be placed here,
   such as static images, fonts, or third-party static libraries.
 
+Linting and Style Checking Client-Side Code
+*******************************************
+
+Girder uses `ESLint <http://eslint.org/>`_ to perform static analysis of its
+own JavaScript files.  Developers can easily add the same static analysis
+tests to their own plugins using a CMake function call defined by Girder.
+
+.. code-block:: cmake
+
+    add_eslint_test(
+        js_static_analysis_cats "${PROJECT_SOURCE_DIR}/plugins/cats/web_client"
+    )
+
+This will check all files with the extension **.js** inside of the ``cats`` plugin's
+``web_client`` directory using the same style rules enforced within Girder itself.
+Plugin developers can also choose to extend or even override entirely the core style
+rules.  To do this, you only need to provide a path to a custom ESLint configuration
+file as follows.
+
+.. code-block:: cmake
+
+    add_eslint_test(
+        js_static_analysis_cats "${PROJECT_SOURCE_DIR}/plugins/cats/web_client"
+        ESLINT_CONFIG_FILE "${PROJECT_SOURCE_DIR}/plugins/cats/.eslintrc"
+    )
+
+You can `configure ESLint <http://eslint.org/docs/user-guide/configuring.html>`_
+inside this file however you choose.  For example, to extend Girder's own
+configuration by adding a new global variable ``cats`` and you really hate using
+semicolons, you can put the following in your **.eslintrc**
+
+.. code-block:: javascript
+
+    {
+        "extends": "../../.eslintrc",
+        "globals": {
+            "cats": true
+        },
+        "rules": {
+            "semi": 0
+        }
+    }
+
+Installing custom dependencies from npm
+***************************************
+
+There are two types of node dependencies you may need to install for your plugin.
+Each type needs to be installed differently due to how node manages external packages.
+
+- Run time dependencies that your application relies on should be installed into
+  your plugin's **node_modules** directory.  These should be provided in a
+  `package.json <https://docs.npmjs.com/files/package.json>`_
+  file as they are for standalone node applications.  When such a file exists
+  in your plugin directory, ``npm install`` will be executed in a new process
+  from within your package's directory.
+
+- Build time dependencies that your grunt tasks rely on to assemble the sources
+  for deployment need to be installed into Girder's own **node_modules** directory.
+  These dependencies will typically be grunt extensions defining extra tasks used
+  by your build.  Such dependencies should be listed under ``grunt.dependencies``
+  as an object (much like dependencies in **package.json**) inside your
+  **plugin.json** or **plugin.yml** file.
+
+  .. code-block:: json
+
+      {
+          "name": "MY_PLUGIN",
+          "grunt": {
+              "dependencies": {
+                  "grunt-shell": ">=0.2.1"
+              }
+          }
+      }
+
+  In addition to installing these dependencies, Girder will also load grunt extensions
+  contained in them before executing any tasks.
+
+.. note:: Packages installed into Girder's scope can possibly overwrite an alternate
+          version of the same package.  Care should be taken to only list packages here
+          that are not already provided by Girder's own build time dependencies.
+
 Executing custom Grunt build steps for your plugin
 **************************************************
 
@@ -450,7 +554,8 @@ key to your **plugin.json** file.
     "grunt":
         {
         "file" : "Gruntfile.js",
-        "defaultTargets": [ "MY_PLUGIN_TASK" ]
+        "defaultTargets": [ "MY_PLUGIN_TASK" ],
+        "autobuild": true
         }
     }
 
@@ -460,6 +565,11 @@ and add any target to the default one using the "defaultTargets" array.
 .. note:: The **file** key within the **grunt** object must be a path that is
    relative to the root directory of your plugin. It does not have to be called
    ``Gruntfile.js``, it can be called anything you want.
+
+.. note:: Girder creates a number of grunt build tasks that expect plugins to be
+   organized according to a certain convention.  To opt out of these tasks, add
+   an **autobuild** key (default: **true**) within the **grunt** object and set
+   it to **false**.
 
 All paths within your custom Grunt tasks must be relative to the root directory
 of the Girder source repository, rather than relative to the plugin directory.

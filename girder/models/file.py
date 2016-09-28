@@ -19,13 +19,16 @@
 
 import cherrypy
 import datetime
+import six
 
 from .model_base import Model, ValidationException
-from ..constants import AccessType
-from girder.utility import assetstore_utilities
+from girder import events
+from girder.constants import AccessType, CoreEventHandler
+from girder.models.model_base import AccessControlledModel
+from girder.utility import assetstore_utilities, acl_mixin
 
 
-class File(Model):
+class File(acl_mixin.AccessControlMixin, Model):
     """
     This model represents a File, which is stored in an assetstore.
     """
@@ -34,6 +37,18 @@ class File(Model):
         self.ensureIndices(
             ['itemId', 'assetstoreId', 'exts'] +
             assetstore_utilities.fileIndexFields())
+        self.resourceColl = 'item'
+        self.resourceParent = 'itemId'
+
+        self.exposeFields(level=AccessType.READ, fields=(
+            '_id', 'mimeType', 'itemId', 'exts', 'name', 'created', 'creatorId',
+            'size', 'updated', 'linkUrl'))
+
+        self.exposeFields(level=AccessType.SITE_ADMIN, fields=('assetstoreId',))
+
+        events.bind('model.file.save.created',
+                    CoreEventHandler.FILE_PROPAGATE_SIZE,
+                    self._propagateSizeToItem)
 
     def remove(self, file, updateItemSize=True, **kwargs):
         """
@@ -43,31 +58,50 @@ class File(Model):
 
         :param file: The file document to remove.
         :param updateItemSize: Whether to update the item size. Only set this
-        to False if you plan to delete the item and do not care about updating
-        its size.
+            to False if you plan to delete the item and do not care about
+            updating its size.
         """
         if file.get('assetstoreId'):
             assetstore = self.model('assetstore').load(file['assetstoreId'])
             adapter = assetstore_utilities.getAssetstoreAdapter(assetstore)
             adapter.deleteFile(file)
 
-        item = self.model('item').load(file['itemId'], force=True)
-        # files that are linkUrls might not have a size field
-        if 'size' in file:
-            self.propagateSizeChange(item, -file['size'], updateItemSize)
+        if file['itemId']:
+            item = self.model('item').load(file['itemId'], force=True)
+            # files that are linkUrls might not have a size field
+            if 'size' in file:
+                self.propagateSizeChange(item, -file['size'], updateItemSize)
 
         Model.remove(self, file)
 
-    def download(self, file, offset=0, headers=True):
+    def download(self, file, offset=0, headers=True, endByte=None,
+                 contentDisposition=None, extraParameters=None):
         """
         Use the appropriate assetstore adapter for whatever assetstore the
         file is stored in, and call downloadFile on it. If the file is a link
         file rather than a file in an assetstore, we redirect to it.
+
+        :param file: The file to download.
+        :param offset: The start byte within the file.
+        :type offset: int
+        :param headers: Whether to set headers (i.e. is this an HTTP request
+            for a single file, or something else).
+        :type headers: bool
+        :param endByte: Final byte to download. If ``None``, downloads to the
+            end of the file.
+        :type endByte: int or None
+        :param contentDisposition: Content-Disposition response header
+            disposition-type value.
+        :type contentDisposition: str or None
+        :type extraParameters: str or None
         """
         if file.get('assetstoreId'):
             assetstore = self.model('assetstore').load(file['assetstoreId'])
             adapter = assetstore_utilities.getAssetstoreAdapter(assetstore)
-            return adapter.downloadFile(file, offset=offset, headers=headers)
+            return adapter.downloadFile(
+                file, offset=offset, headers=headers, endByte=endByte,
+                contentDisposition=contentDisposition,
+                extraParameters=extraParameters)
         elif file.get('linkUrl'):
             if headers:
                 raise cherrypy.HTTPRedirect(file['linkUrl'])
@@ -93,14 +127,15 @@ class File(Model):
         if 'name' not in doc or not doc['name']:
             raise ValidationException('File name must not be empty.', 'name')
 
-        doc['exts'] = doc['name'].split('.')[1:]
+        doc['exts'] = [ext.lower() for ext in doc['name'].split('.')[1:]]
 
         return doc
 
     def createLinkFile(self, name, parent, parentType, url, creator):
         """
-        Create a file that is a link to a URL rather than something we maintain
+        Create a file that is a link to a URL, rather than something we maintain
         in an assetstore.
+
         :param name: The local name for the file.
         :type name: str
         :param parent: The parent object for this file.
@@ -109,7 +144,7 @@ class File(Model):
         :type parentType: str
         :param url: The URL that this file points to
         :param creator: The user creating the file.
-        :type user: user
+        :type creator: dict
         """
         if parentType == 'folder':
             # Create a new item with the name of the file.
@@ -148,8 +183,8 @@ class File(Model):
         :param sizeIncrement: The change in size to propagate.
         :type sizeIncrement: int
         :param updateItemSize: Whether the item size should be updated. Set to
-        False if you plan to delete the item immediately and don't care to
-        update its size.
+            False if you plan to delete the item immediately and don't care to
+            update its size.
         """
         if updateItemSize:
             # Propagate size up to item
@@ -167,8 +202,8 @@ class File(Model):
             '_id': item['baseParentId']
         }, field='size', amount=sizeIncrement, multi=False)
 
-    def createFile(self, creator, item, name, size, assetstore, mimeType,
-                   saveFile=True):
+    def createFile(self, creator, item, name, size, assetstore, mimeType=None,
+                   saveFile=True, reuseExisting=False):
         """
         Create a new file record in the database.
 
@@ -183,26 +218,72 @@ class File(Model):
         :type mimeType: str
         :param saveFile: if False, don't save the file, just return it.
         :type saveFile: bool
+        :param reuseExisting: If a file with the same name already exists in
+            this location, return it rather than creating a new file.
+        :type reuseExisting: bool
         """
+        if reuseExisting:
+            existing = self.findOne({
+                'itemId': item['_id'],
+                'name': name
+            })
+            if existing:
+                return existing
+
         file = {
             'created': datetime.datetime.utcnow(),
-            'itemId': item['_id'],
             'creatorId': creator['_id'],
             'assetstoreId': assetstore['_id'],
             'name': name,
             'mimeType': mimeType,
-            'size': size
+            'size': size,
+            'itemId': item['_id'] if item else None
         }
-
-        self.propagateSizeChange(item, size)
 
         if saveFile:
             return self.save(file)
         return file
 
+    def _propagateSizeToItem(self, event):
+        """
+        This callback updates an item's size to include that of a newly-created
+        file.
+
+        This generally should not be called or overridden directly. This should
+        not be unregistered, as that would cause item, folder, and collection
+        sizes to be inaccurate.
+        """
+        # This task is not performed in "createFile", in case
+        # "saveFile==False". The item size should be updated only when it's
+        # certain that the file will actually be saved. It is also possible for
+        # "model.file.save" to set "defaultPrevented", which would prevent the
+        # item from being saved initially.
+        fileDoc = event.info
+        itemId = fileDoc.get('itemId')
+        if itemId and fileDoc.get('size'):
+            item = self.model('item').load(itemId, force=True)
+            self.propagateSizeChange(item, fileDoc['size'])
+
+    def updateFile(self, file):
+        """
+        Call this when changing properties of an existing file, such as name
+        or MIME type. This causes the updated stamp to change, and also alerts
+        the underlying assetstore adapter that file information has changed.
+        """
+        file['updated'] = datetime.datetime.utcnow()
+        file = self.save(file)
+
+        if file.get('assetstoreId'):
+            assetstore = self.model('assetstore').load(file['assetstoreId'])
+            adapter = assetstore_utilities.getAssetstoreAdapter(assetstore)
+            adapter.fileUpdated(file)
+
+        return file
+
     def copyFile(self, srcFile, creator, item=None):
         """
         Copy a file so that we don't need to duplicate stored data.
+
         :param srcFile: The file to copy.
         :type srcFile: dict
         :param creator: The user copying the file.
@@ -225,8 +306,46 @@ class File(Model):
             adapter.copyFile(srcFile, file)
         elif file.get('linkUrl'):
             file['linkUrl'] = srcFile['linkUrl']
-        item = self.model('item').load(id=file['itemId'], user=creator,
-                                       level=AccessType.WRITE, exc=True)
-        if 'size' in file:
-            self.propagateSizeChange(item, file['size'])
+
         return self.save(file)
+
+    def isOrphan(self, file, user=None):
+        """
+        Returns True if this file is orphaned (its item or attached entity is
+        missing).
+
+        :param file: The file to check.
+        :type file: dict
+        :param user: (deprecated) Not used.
+        """
+        if file.get('attachedToId'):
+            attachedToType = file.get('attachedToType')
+            if isinstance(attachedToType, six.string_types):
+                modelType = self.model(attachedToType)
+            elif isinstance(attachedToType, list) and len(attachedToType) == 2:
+                modelType = self.model(*attachedToType)
+            else:
+                # Invalid 'attachedToType'
+                return True
+            if isinstance(modelType, (acl_mixin.AccessControlMixin,
+                                      AccessControlledModel)):
+                attachedDoc = modelType.load(
+                    file.get('attachedToId'), force=True)
+            else:
+                attachedDoc = modelType.load(
+                    file.get('attachedToId'))
+        else:
+            attachedDoc = self.model('item').load(
+                file.get('itemId'), force=True)
+        return not attachedDoc
+
+    def updateSize(self, file):
+        """
+        Returns the size of this file. Does not currently check the underlying
+        assetstore to verify the size.
+
+        :param file: The file.
+        :type file: dict
+        """
+        # TODO: check underlying assetstore for size?
+        return file.get('size', 0), 0

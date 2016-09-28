@@ -1,14 +1,7 @@
 /**
  * Start the girder backbone app.
  */
-$(function () {
-    girder.events.trigger('g:appload.before');
-    var app = new girder.App({
-        el: 'body',
-        parentView: null
-    });
-    girder.events.trigger('g:appload.after');
-});
+girderTest.startApp();
 
 function _getFirstId(collection, ids, key, fetchParamsFunc) {
     var coll;
@@ -55,7 +48,8 @@ describe('Test routing paths', function () {
 
     it('create a collection',
         girderTest.createCollection('Test Collection',
-                                    'Collection Description'));
+                                    'Collection Description', 'Private'));
+
     it('make the collection public', function () {
         waitsFor(function () {
             return $('.g-collection-actions-button:visible').is(':enabled');
@@ -64,7 +58,7 @@ describe('Test routing paths', function () {
             $('.g-collection-actions-button').click();
         });
         waitsFor(function () {
-            return $(".g-collection-access-control[role='menuitem']:visible").length == 1;
+            return $(".g-collection-access-control[role='menuitem']:visible").length === 1;
         }, 'access control menu item to appear');
         runs(function () {
             $('.g-collection-access-control').click();
@@ -206,7 +200,7 @@ describe('Test routing paths', function () {
                 return $('.modal-title').text() === 'Create folder';
             });
 
-        var collFolderPath = collPath + '/folder/' + ids.collectionFolder;
+        var collFolderPath = collPath + '/folder/' + ids.userFolder;
         girderTest.testRoute(collFolderPath, false, function () {
             return $('.g-collection-actions-menu').length === 1 &&
                    $('.g-folder-access-button').length === 1;
@@ -341,7 +335,7 @@ describe('Test routing paths', function () {
     it('test item routes', function () {
         var itemPath = 'item/' + ids.item;
         girderTest.testRoute(itemPath, false, function () {
-            return $('.g-item-header .g-item-name').text() == 'Link File';
+            return $('.g-item-header .g-item-name').text() === 'Link File';
         });
         girderTest.testRoute(itemPath + '?dialog=itemedit', true,
             function () {
@@ -390,8 +384,6 @@ describe('Test internal javascript functions', function () {
             ];
             for (var i = 0; i < testVals.length; i += 1) {
                 var encode = $.param(testVals[i]);
-                console.log($.param(testVals[i]));
-                console.log($.param(girder.parseQueryString($.param(testVals[i]))));
                 expect($.param(girder.parseQueryString(encode))).toBe(encode);
             }
         });

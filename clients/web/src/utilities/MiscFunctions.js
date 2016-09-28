@@ -40,7 +40,7 @@ girder.formatDate = function (datestr, resolution) {
  * prefixes.
  */
 girder.formatSize = function (sizeBytes) {
-    if (sizeBytes < 20000) {
+    if (sizeBytes < 1024) {
         return sizeBytes + ' B';
     }
     var i, sizeVal = sizeBytes, precision = 1;
@@ -54,7 +54,44 @@ girder.formatSize = function (sizeBytes) {
         precision = 2;
     }
     return sizeVal.toFixed(precision) + ' ' +
-        ['B', 'kB', 'MB', 'GB', 'TB'][i];
+        ['B', 'kB', 'MB', 'GB', 'TB'][Math.min(i, 4)];
+};
+
+/**
+ * Like girder.formatSize, but more generic. Returns a human-readable format
+ * of an integer using metric prefixes. The caller is expected to append any
+ * unit string if necessary.
+ *
+ * @param {integer} n The number to format.
+ * @param {Object} [opts={}] Formatting options. These include:
+ *   - {integer} [maxLen] Max number of digits in the output.
+ *   - {integer} [base=1000] Base for the prefixes (usually 1000 or 1024).
+ *   - {string} [sep=''] Separator between numeric value and metric prefix.
+ */
+girder.formatCount = function (n, opts) {
+    n = n || 0;
+    opts = opts || {};
+
+    var i = 0,
+        base = opts.base || 1000,
+        sep = opts.sep || '',
+        maxLen = opts.maxLen || 3,
+        precision = maxLen - 1;
+
+    for (; n > base; i += 1) {
+        n /= base;
+    }
+
+    if (!i) {
+        precision = 0;
+    } else if (n > 100) {
+        precision -= 2;
+    } else if (n > 10) {
+        precision -= 1;
+    }
+
+    return n.toFixed(Math.max(0, precision)) + sep +
+        ['', 'k', 'M', 'G', 'T'][Math.min(i, 4)];
 };
 
 /**
@@ -136,8 +173,8 @@ girder.getModelClassByName = function (name) {
 girder.parseQueryString = function (queryString) {
     var params = {};
     if (queryString) {
-        _.each(queryString.replace(/\+/g, ' ').split(/&/g), function (el, i) {
-            var aux = el.split('='), o = {}, val;
+        _.each(queryString.replace(/\+/g, ' ').split(/&/g), function (el) {
+            var aux = el.split('='), val;
             if (aux.length > 1) {
                 val = decodeURIComponent(el.substr(aux[0].length + 1));
             }
@@ -180,6 +217,9 @@ girder.cookie = {
         return cookie;
     }
 };
+
+// Make sure girder.currentToken is set on startup if a cookie exists.
+girder.currentToken = girder.cookie.find('girderToken');
 
 /**
  * Restart the server, wait until it has restarted, then reload the current
@@ -226,6 +266,35 @@ girder.restartServer._reloadWindow = function () {
 };
 
 /**
+ * Create a set of flags that can be OR'd (|) together to define a set of
+ * options.
+ *
+ * @param {Array} options An array of strings defining the option names.
+ * @param {string} allOption If you want an option that enables all options,
+ *                 pass its name as this parameter.
+ * @return {Object} An object mapping the names of options to values.
+ */
+girder.defineFlags = function (options, allOption) {
+    var i = 0,
+        obj = {};
+
+    if (allOption) {
+        obj[allOption] = 1;
+    }
+    _.each(options, function (opt) {
+        obj[opt] = 1 << i;
+
+        if (allOption) {
+            obj[allOption] |= obj[opt];
+        }
+
+        i += 1;
+    });
+
+    return obj;
+};
+
+/**
  * Transform markdown into HTML and render it into the given element. If no
  * element is provided, simply returns the HTML.
  *
@@ -234,21 +303,31 @@ girder.restartServer._reloadWindow = function () {
  *        return the HTML value.
  */
 girder.renderMarkdown = (function () {
-    if (window.marked) {
-        marked.setOptions({ sanitize: true });
+    if (window.Remarkable) {
+        var md = new Remarkable({
+            linkify: true
+        });
         return function (val, el) {
             if (el) {
-                $(el).html(marked(val));
+                $(el).html(md.render(val));
             } else {
-                return marked(val);
+                return md.render(val);
             }
         };
     } else {
         return function () {
-            throw new Error('You must include the marked library to call this function');
+            throw new Error(
+                'You must include the remarkable library to call this function');
         };
     }
 }());
+
+/**
+ * Capitalize the first character of a string.
+ */
+girder.capitalize = function (str) {
+    return str.charAt(0).toUpperCase() + str.substring(1);
+};
 
 (function () {
     var _pluginConfigRoutes = {};
@@ -272,12 +351,12 @@ girder.renderMarkdown = (function () {
 (function () {
     var restXhrPool = {};
     var restXhrCount = 0;
-    $(document).ajaxSend(function (event, xhr, opts) {
+    $(document).ajaxSend(function (event, xhr) {
         restXhrCount += 1;
         xhr.girderXhrNumber = restXhrCount;
         restXhrPool[restXhrCount] = xhr;
     });
-    $(document).ajaxComplete(function (event, xhr, opts) {
+    $(document).ajaxComplete(function (event, xhr) {
         var num = xhr.girderXhrNumber;
         if (num && restXhrPool[num]) {
             delete restXhrPool[num];
@@ -301,7 +380,7 @@ girder.renderMarkdown = (function () {
      *                  xhr.girder.(category) set to a truthy value.
      */
     girder.cancelRestRequests = function (category) {
-        _.each(restXhrPool, function (xhr, num, pool) {
+        _.each(restXhrPool, function (xhr) {
             if (category && (!xhr.girder || !xhr.girder[category])) {
                 return;
             }

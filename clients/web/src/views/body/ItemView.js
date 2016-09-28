@@ -1,5 +1,4 @@
 (function () {
-
     /**
      * This view shows a single item's page.
      */
@@ -54,7 +53,7 @@
                     el: container,
                     item: this.model,
                     parentView: this
-                }).off('g:saved').on('g:saved', function (item) {
+                }).off('g:saved').on('g:saved', function () {
                     this.render();
                 }, this);
             }
@@ -111,6 +110,10 @@
                     upload: this.upload,
                     parentView: this
                 });
+                this.fileListWidget.once('g:changed', function () {
+                    this.trigger('g:rendered');
+                }, this);
+
                 this.fileEdit = false;
                 this.upload = false;
 
@@ -133,7 +136,6 @@
                     this.editItem();
                     this.edit = false;
                 }
-
             }, this));
 
             return this;
@@ -152,8 +154,6 @@
             girder.events.trigger('g:navigateTo', girder.views.ItemView, _.extend({
                 item: item
             }, params || {}));
-        }, this).on('g:error', function () {
-            girder.router.navigate('collections', {trigger: true});
         }, this).fetch();
     };
 

@@ -28,29 +28,26 @@ class GirderCli(GirderClient):
     """
 
     def __init__(self, username, password, dryrun, blacklist,
-                 host='localhost', port=8080, apiRoot=None, scheme='http'):
+                 host=None, port=None, apiRoot=None, scheme=None, apiUrl=None,
+                 apiKey=None):
         """initialization function to create a GirderCli instance, will attempt
-        to authenticate with the designated Girder instance.
+        to authenticate with the designated Girder instance. Aside from username
+        and password, all other kwargs are passed directly through to the
+        :py:class:`girder_client.GirderClient` base class constructor.
+
         :param username: username to authenticate to Girder instance.
         :param password: password to authenticate to Girder instance, leave
             this blank to be prompted.
-        :param dryrun: boolean indicating whether to run the command or just
-            perform a dryrun showing which files and folders will be uploaded.
-        :param blacklist: list of filenames which will be ignored by upload.
-        :param host: host used to connect to Girder instance,
-            defaults to 'localhost'
-        :param port: port used to connect to Girder instance,
-            defaults to 8080
-        :param apiRoot: The path on the server corresponding to the root of the
-            Girder REST API. If None is passed, assumes '/api/v1'.
-        :param scheme: scheme used to connect to Girder instance,
-            defaults to 'http'; if passing 'https' port should likely be 443.
         """
         GirderClient.__init__(self, host=host, port=port,
                               apiRoot=apiRoot, scheme=scheme, dryrun=dryrun,
-                              blacklist=blacklist)
+                              blacklist=blacklist, apiUrl=apiUrl)
         interactive = password is None
-        self.authenticate(username, password, interactive=interactive)
+
+        if apiKey:
+            self.authenticate(apiKey=apiKey)
+        elif username:
+            self.authenticate(username, password, interactive=interactive)
 
 
 def main():
@@ -67,14 +64,18 @@ def main():
         '--dryrun', action='store_true',
         help='will not write anything to Girder, only report on what would '
         'happen')
+    parser.add_argument('--api-url', required=False, default=None,
+                        help='full URL to the RESTful API of a Girder server')
     parser.add_argument('--username', required=False, default=None)
     parser.add_argument('--password', required=False, default=None)
-    parser.add_argument('--scheme', required=False, default='http')
-    parser.add_argument('--host', required=False, default='localhost')
-    parser.add_argument('--port', required=False, default='8080')
-    parser.add_argument('--api-root', required=False, default='/api/v1',
-                        help='path to the Girder REST API')
-    parser.add_argument('-c', default='upload', choices=['upload', 'download'],
+    parser.add_argument('--api-key', required=False, default=None)
+    parser.add_argument('--scheme', required=False, default=None)
+    parser.add_argument('--host', required=False, default=None)
+    parser.add_argument('--port', required=False, default=None)
+    parser.add_argument('--api-root', required=False, default=None,
+                        help='relative path to the Girder REST API')
+    parser.add_argument('-c', default='upload',
+                        choices=['upload', 'download', 'localsync'],
                         help='command to run')
     parser.add_argument('parent_id', help='id of Girder parent target')
     parser.add_argument('--parent-type', required=False, default='folder',
@@ -89,18 +90,27 @@ def main():
 
     g = GirderCli(args.username, args.password, bool(args.dryrun),
                   args.blacklist.split(','), host=args.host, port=args.port,
-                  apiRoot=args.api_root, scheme=args.scheme)
+                  apiRoot=args.api_root, scheme=args.scheme,
+                  apiUrl=args.api_url, apiKey=args.api_key)
     if args.c == 'upload':
         g.upload(args.local_folder, args.parent_id, args.parent_type,
                  leaf_folders_as_items=args.leaf_folders_as_items,
                  reuse_existing=args.reuse)
     elif args.c == 'download':
         if args.parent_type != 'folder':
-            print 'download command only accepts parent-type of folder'
+            print('download command only accepts parent-type of folder')
         else:
             g.downloadFolderRecursive(args.parent_id, args.local_folder)
+    elif args.c == 'localsync':
+        if args.parent_type != 'folder':
+            print('localsync command only accepts parent-type of folder')
+        else:
+            g.loadLocalMetadata(args.local_folder)
+            g.downloadFolderRecursive(args.parent_id, args.local_folder,
+                                      sync=True)
+            g.saveLocalMetadata(args.local_folder)
     else:
-        print 'No implementation for command %s' % args.c
+        print('No implementation for command %s' % args.c)
 
 
 if __name__ == '__main__':

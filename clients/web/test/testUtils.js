@@ -1,6 +1,8 @@
 /**
- * Contains utility functions used in the girder jasmine tests.
+ * Contains utility functions used in the Girder Jasmine tests.
  */
+/* globals runs, expect, waitsFor, blanket, waits */
+
 var girderTest = girderTest || {};
 
 window.alert = function (msg) {
@@ -11,7 +13,7 @@ window.alert = function (msg) {
 // Timeout to wait for asynchronous actions
 girderTest.TIMEOUT = 5000;
 
-girderTest.createUser = function (login, email, firstName, lastName, password) {
+girderTest.createUser = function (login, email, firstName, lastName, password, userList) {
 
     return function () {
         runs(function () {
@@ -41,7 +43,7 @@ girderTest.createUser = function (login, email, firstName, lastName, password) {
         });
 
         waitsFor(function () {
-            return $('.g-user-text a')[0].text === firstName + ' ' + lastName;
+            return $('.g-user-text a')[0].text.trim() === login;
         }, 'user to be logged in');
         girderTest.waitForLoad();
 
@@ -49,6 +51,10 @@ girderTest.createUser = function (login, email, firstName, lastName, password) {
             expect(girder.currentUser).not.toBe(null);
             expect(girder.currentUser.name()).toBe(firstName + ' ' + lastName);
             expect(girder.currentUser.get('login')).toBe(login);
+
+            if (userList) {
+                userList.push(girder.currentUser);
+            }
         });
     };
 };
@@ -83,7 +89,7 @@ girderTest.login = function (login, firstName, lastName, password) {
         });
 
         waitsFor(function () {
-            return $('.g-user-text a')[0].text === firstName + ' ' + lastName;
+            return $('.g-user-text a')[0].text.trim() === login;
         }, 'user to be logged in');
         girderTest.waitForLoad();
 
@@ -151,13 +157,13 @@ girderTest.goToCurrentUserSettings = function () {
 
 // This assumes that you're logged into the system and on the create collection
 // page.
-girderTest.createCollection = function (collName, collDesc) {
+girderTest.createCollection = function (collName, collDesc, createFolderName) {
 
     return function () {
 
         waitsFor(function () {
             return $('li.active .g-page-number').text() === 'Page 1' &&
-                   $('.g-collection-create-button').is(':enabled');
+                $('.g-collection-create-button').is(':enabled');
         }, 'create collection button to appear');
 
         girderTest.waitForLoad();
@@ -173,7 +179,7 @@ girderTest.createCollection = function (collName, collDesc) {
         girderTest.waitForDialog();
         waitsFor(function () {
             return $('input#g-name').length > 0 &&
-                   $('.g-save-collection:visible').is(':enabled');
+                $('.g-save-collection:visible').is(':enabled');
         }, 'create collection dialog to appear');
 
         runs(function () {
@@ -183,9 +189,32 @@ girderTest.createCollection = function (collName, collDesc) {
         });
         waitsFor(function () {
             return $('.g-collection-name').text() === collName &&
-                   $('.g-collection-description').text() === collDesc;
+                $('.g-collection-description').text() === collDesc;
         }, 'new collection page to load');
         girderTest.waitForLoad();
+
+        if (createFolderName) {
+            waitsFor(function () {
+                return $('.g-create-subfolder').length > 0;
+            }, 'hierarchy widget to laod');
+
+            runs(function () {
+                return $('.g-create-subfolder').click();
+            });
+            girderTest.waitForDialog();
+            waitsFor(function () {
+                return $('.modal-body input#g-name').length > 0;
+            }, 'create folder dialog to appear');
+
+            runs(function () {
+                $('#g-name').val(createFolderName);
+                $('.g-save-folder').click();
+            });
+            girderTest.waitForLoad();
+            waitsFor(function () {
+                return $('.g-folder-list-link').length > 0;
+            }, 'new folder to appear in the list');
+        }
     };
 };
 
@@ -197,15 +226,15 @@ girderTest.goToGroupsPage = function () {
         girderTest.waitForLoad();
 
         waitsFor(function () {
-            return $("a.g-nav-link[g-target='groups']:visible").length > 0;
+            return $('a.g-nav-link[g-target="groups"]:visible').length > 0;
         }, 'groups nav link to appear');
 
         runs(function () {
-            $("a.g-nav-link[g-target='groups']").click();
+            $('a.g-nav-link[g-target="groups"]').click();
         });
 
         waitsFor(function () {
-            return $(".g-group-search-form .g-search-field:visible").is(':enabled');
+            return $('.g-group-search-form .g-search-field:visible').is(':enabled');
         }, 'navigate to groups page');
         girderTest.waitForLoad();
     };
@@ -220,15 +249,15 @@ girderTest.goToUsersPage = function () {
         girderTest.waitForLoad();
 
         waitsFor(function () {
-            return $("a.g-nav-link[g-target='users']:visible").length > 0;
+            return $('a.g-nav-link[g-target="users"]:visible').length > 0;
         }, 'users nav link to appear');
 
         runs(function () {
-            $("a.g-nav-link[g-target='users']").click();
+            $('a.g-nav-link[g-target="users"]').click();
         });
 
         waitsFor(function () {
-            return $(".g-user-search-form .g-search-field:visible").is(':enabled');
+            return $('.g-user-search-form .g-search-field:visible').is(':enabled');
         }, 'navigate to users page');
         girderTest.waitForLoad();
     };
@@ -244,7 +273,7 @@ girderTest.createGroup = function (groupName, groupDesc, pub) {
 
         waitsFor(function () {
             return $('li.active .g-page-number').text() === 'Page 1' &&
-                   $('.g-group-create-button:visible').is(':enabled');
+                $('.g-group-create-button:visible').is(':enabled');
         }, 'create group button to appear');
 
         runs(function () {
@@ -254,10 +283,10 @@ girderTest.createGroup = function (groupName, groupDesc, pub) {
         girderTest.waitForDialog();
         waitsFor(function () {
             return $('#g-dialog-container').hasClass('in') &&
-                   $('#g-access-public:visible').length > 0 &&
-                   $('#g-name:visible').length > 0 &&
-                   $('#g-description:visible').length > 0 &&
-                   $('.g-save-group:visible').length > 0;
+                $('#g-access-public:visible').length > 0 &&
+                $('#g-name:visible').length > 0 &&
+                $('#g-description:visible').length > 0 &&
+                $('.g-save-group:visible').length > 0;
         }, 'create group dialog to appear');
 
         if (pub) {
@@ -267,7 +296,7 @@ girderTest.createGroup = function (groupName, groupDesc, pub) {
 
             waitsFor(function () {
                 return $('.g-save-group:visible').length > 0 &&
-                       $('.radio.g-selected').text().match("Public").length > 0;
+                    $('.radio.g-selected').text().match('Public').length > 0;
             }, 'access selection to be set to public');
         }
 
@@ -279,7 +308,7 @@ girderTest.createGroup = function (groupName, groupDesc, pub) {
 
         waitsFor(function () {
             return $('.g-group-name').text() === groupName &&
-                   $('.g-group-description').text() === groupDesc;
+                $('.g-group-description').text() === groupDesc;
         }, 'new group page to load');
         girderTest.waitForLoad();
     };
@@ -289,40 +318,148 @@ girderTest.createGroup = function (groupName, groupDesc, pub) {
  * metadata editing options.
  */
 girderTest.testMetadata = function () {
+
+    function _editSimpleMetadata(value, elem) {
+        if (value !== null) {
+            $('textarea.g-widget-metadata-value-input', elem).val(value);
+        } else {
+            value = $('textarea.g-widget-metadata-value-input', elem).val();
+        }
+
+        return value;
+    }
+
+    function _editJsonMetadata(value, elem, type) {
+        // type is one of (tree, code)
+        type = type || 'tree';
+
+        if (type === 'tree') {
+            if (typeof value !== 'object') {
+                $('.jsoneditor button.contextmenu:first', elem).click();
+
+                $('.jsoneditor-contextmenu .type-object:first').click();
+                $('.jsoneditor-contextmenu .type-auto:first').click();
+
+                $('.jsoneditor table.values div.value.empty', elem).text(value);
+
+                $('.jsoneditor table.values .empty', elem).trigger('keyup');
+
+                return;
+            }
+
+            for (var arrKey in value) {
+                if (value.hasOwnProperty(arrKey)) {
+                    $('.jsoneditor button.contextmenu', elem).click();
+                    $('.jsoneditor-contextmenu button.insert').click();
+                    $('.jsoneditor table.values div.field.empty', elem).text(arrKey);
+                    $('.jsoneditor table.values div.value.empty', elem).text(value[arrKey]);
+
+                    // trigger update for JSONEditor to do internal tasks
+                    $('.jsoneditor table.values .empty', elem).trigger('keyup');
+                }
+            }
+        }
+
+        // Will place code editing here
+    }
+
+    // Just switch a simple -> json or vice versa, and save. Assert the data is what it should be
+    function _toggleMetadata(key, beforeType, action, errorMessage) {
+        var elem, beforeValue, afterElem;
+        action = action || 'save';
+
+        runs(function () {
+            elem = $('.g-widget-metadata-key:contains("' + key + '")').closest('.g-widget-metadata-row');
+            expect(elem.length).toBe(1); // has to already exist
+            expect($('.g-widget-metadata-edit-button', elem).length).toBe(1);
+
+            beforeValue = elem.attr('g-value');
+
+            // Edit the metadata
+            $('.g-widget-metadata-edit-button', elem).click();
+        });
+
+        waitsFor(function () {
+            return $('.g-widget-metadata-toggle-button', elem).length === 1;
+        }, 'the toggle metadata field to appear');
+
+        runs(function () {
+            // Toggle the action
+            $('.g-widget-metadata-toggle-button', elem).click();
+
+            // Cancel or save
+            $('.g-widget-metadata-' + action + '-button').click();
+        });
+
+        if (errorMessage) {
+            waitsFor(function () {
+                return $('.alert').text().match(errorMessage);
+            }, 'alert with "' + errorMessage + '" to appear');
+
+            return;
+        }
+
+        waitsFor(function () {
+            return $('input.g-widget-metadata-key-input').length === 0;
+        }, 'edit fields to disappear');
+
+        runs(function () {
+            afterElem = $('.g-widget-metadata-key:contains("' + key + '")').closest('.g-widget-metadata-row');
+            expect(afterElem.length).toBe(1);
+            expect($('.g-widget-metadata-edit-button', afterElem).length).toBe(1);
+
+            if (action === 'save') {
+                if (beforeType === 'json') {
+                    // We want to be sure that the JSON object put into a minified string form is what we get.
+                    expect(afterElem.attr('g-value')).toBe(JSON.stringify(
+                        JSON.parse(beforeValue)));
+                } else {
+                    expect(afterElem.attr('g-value')).toBe(JSON.stringify(
+                        JSON.parse(beforeValue), null, 4));
+                }
+            } else if (action === 'cancel') {
+                // If we're canceling the conversion, the after value needs to be the same as the before
+                expect(afterElem.attr('g-value')).toBe(beforeValue);
+            }
+        });
+    }
+
     /* Add metadata and check that the value is actually set for the item.
      * :param origKey: null to create a new metadata item.  Otherwise, edit the
      *                 metadata item with this key.
      * :param key: key text.
      * :param value: value text.  If this appears to be a JSON string, the
      *               metadata should be stored as a JSON object.
-     * :param action: one of 'save', 'cance', or 'delete'.  'delete' can't be
+     * :param action: one of 'save', 'cancel', or 'delete'.  'delete' can't be
      *                used with new items.  Default is 'save'.
      * :param errorMessage: if present, expect an information message with
      *                      regex.
      */
-    function _editMetadata(origKey, key, value, action, errorMessage) {
+    function _editMetadata(origKey, key, value, action, errorMessage, type) {
         var expectedNum, elem;
+        type = type || 'simple';
 
         if (origKey === null) {
             waitsFor(function () {
                 return $('.g-widget-metadata-add-button:visible').length === 1;
             }, 'the add metadata button to appear');
             runs(function () {
-                expectedNum = $(".g-widget-metadata-row").length;
-                $('.g-widget-metadata-add-button:visible').click();
+                expectedNum = $('.g-widget-metadata-row').length;
+                $('a.g-add-' + type  + '-metadata').click();
             });
         } else {
             runs(function () {
                 elem = $('.g-widget-metadata-key:contains("' + origKey + '")').closest('.g-widget-metadata-row');
                 expect(elem.length).toBe(1);
                 expect($('.g-widget-metadata-edit-button', elem).length).toBe(1);
-                expectedNum = $(".g-widget-metadata-row").length;
+                expectedNum = $('.g-widget-metadata-row').length;
                 $('.g-widget-metadata-edit-button', elem).click();
             });
         }
         waitsFor(function () {
             return $('input.g-widget-metadata-key-input').length === 1 &&
-                   $('textarea.g-widget-metadata-value-input').length === 1;
+                ((type === 'simple') ? $('textarea.g-widget-metadata-value-input').length === 1 :
+                 $('.jsoneditor > .outer > .tree').length === 1);
         }, 'the add metadata input fields to appear');
         runs(function () {
             if (!elem) {
@@ -333,11 +470,13 @@ girderTest.testMetadata = function () {
             } else {
                 key = $('input.g-widget-metadata-key-input', elem).val();
             }
-            if (value !== null) {
-                $('textarea.g-widget-metadata-value-input', elem).val(value);
+
+            if (type === 'simple') {
+                value = _editSimpleMetadata(value, elem);
             } else {
-                value = $('textarea.g-widget-metadata-value-input', elem).val();
+                _editJsonMetadata(value, elem);
             }
+
         });
         if (errorMessage) {
             runs(function () {
@@ -349,45 +488,49 @@ girderTest.testMetadata = function () {
         }
         switch (action)
         {
-            case 'cancel':
-                runs(function () {
-                    $('.g-widget-metadata-cancel-button').click();
-                });
-                break;
-            case 'delete':
-                runs(function () {
-                    $('.g-widget-metadata-delete-button').click();
-                });
-                girderTest.waitForDialog();
-                waitsFor(function () {
-                    return $('#g-confirm-button:visible').length > 0;
-                }, 'delete confirmation to appear');
-                runs(function () {
-                    $('#g-confirm-button').click();
-                    expectedNum -= 1;
-                });
-                girderTest.waitForLoad();
-                break;
-            default:
-                action = 'save';
-                runs(function () {
-                    $('.g-widget-metadata-save-button').click();
-                    if (origKey === null) {
-                        expectedNum += 1;
-                    }
-                });
-                break;
+        case 'cancel':
+            runs(function () {
+                $('.g-widget-metadata-cancel-button').click();
+            });
+            break;
+        case 'delete':
+            runs(function () {
+                $('.g-widget-metadata-delete-button').click();
+            });
+            girderTest.waitForDialog();
+            waitsFor(function () {
+                return $('#g-confirm-button:visible').length > 0;
+            }, 'delete confirmation to appear');
+            runs(function () {
+                $('#g-confirm-button').click();
+                expectedNum -= 1;
+            });
+            girderTest.waitForLoad();
+            break;
+        default:
+            action = 'save';
+            runs(function () {
+                $('.g-widget-metadata-save-button').click();
+                if (origKey === null) {
+                    expectedNum += 1;
+                }
+            });
+            break;
         }
         waitsFor(function () {
             return $('input.g-widget-metadata-key-input').length === 0 &&
-                   $('textarea.g-widget-metadata-value-input').length === 0;
+                ((type === 'simple') ? $('textarea.g-widget-metadata-value-input').length === 0 :
+                 $('.jsoneditor > .outer > .tree').length === 0);
         }, 'edit fields to disappear');
         waitsFor(function () {
-            return $(".g-widget-metadata-row").length == expectedNum;
+            return $('.g-widget-metadata-row').length === expectedNum;
         }, 'the correct number of items to be listed');
         runs(function () {
-            expect($(".g-widget-metadata-row").length).toBe(expectedNum);
+            expect($('.g-widget-metadata-row').length).toBe(expectedNum);
             if (action === 'save') {
+                if (type === 'json') {
+                    value = JSON.stringify(value, null, 4);
+                }
                 expect(elem.text()).toBe(key + value);
             }
         });
@@ -399,13 +542,40 @@ girderTest.testMetadata = function () {
         _editMetadata(null, '', 'no_key', 'cancel', /.*A key is required for all metadata/);
         _editMetadata(null, 'cancel_me', 'this will be cancelled', 'cancel');
         _editMetadata(null, 'long_key', 'long_value' + new Array(2048).join('-'));
-        _editMetadata(null, 'json_key', JSON.stringify({sample_json: 'value'}));
+        _editMetadata(null, 'json_key', JSON.stringify({sample_json: 'value'}, null, 4));
         _editMetadata(null, 'unicode_key\u00A9\uD834\uDF06', 'unicode_value\u00A9\uD834\uDF06');
         _editMetadata('simple_key', null, 'new_value', 'cancel');
         _editMetadata('long_key', 'json_key', null, 'cancel', /.*json_key is already a metadata key/);
         _editMetadata('simple_key', null, 'new_value');
         _editMetadata('simple_key', null, null, 'delete');
         _editMetadata('json_key', 'json_rename', null);
+
+        _editMetadata(null, 'plain_json', {'some': 'json'}, 'save', null, 'json');
+
+        _editMetadata(null, 'non_object_or_array_json', false, 'save', null, 'json');
+        _toggleMetadata('non_object_or_array_json', 'json');
+
+        // converting json to simple
+        _editMetadata(null, 'a_json_key', {'foo': 'bar'}, 'save', null, 'json');
+        _editMetadata('a_json_key', 'a_json_key', {'foo': 'bar'}, 'cancel', null, 'json');
+        _toggleMetadata('a_json_key', 'json');
+
+        // a simple key that happens to be valid JSON
+        _editMetadata(null, 'a_simple_key', '{"some": "json"}');
+        _toggleMetadata('a_simple_key', 'simple');
+
+        // Test converting and canceling
+        _editMetadata(null, 'a_canceled_key', '{"with": "json"}');
+        _toggleMetadata('a_canceled_key', 'simple', 'cancel');
+
+
+        // a simple key that is not valid json
+        _editMetadata(null, 'some_simple_key', 'foobar12345');
+        _toggleMetadata('some_simple_key', 'simple', 'save', 'The simple field is not valid JSON and can not be converted.');
+
+        // @todo try to save invalid JSON in the code editor, then try to convert it to tree and assert
+        // failures.
+
     };
 };
 
@@ -422,10 +592,10 @@ girderTest.waitForLoad = function (desc) {
     /* It is faster to wait to make sure a dialog is being hidden than to wait
      * for it to be fully gone.  It is probably more reliable, too.  This had
      * been:
-    waitsFor(function () {
-        return $('.modal-backdrop').length === 0;
-    }, 'for the modal backdrop to go away'+desc);
-    */
+     waitsFor(function () {
+     return $('.modal-backdrop').length === 0;
+     }, 'for the modal backdrop to go away'+desc);
+     */
     waitsFor(function () {
         if ($('.modal').data('bs.modal') === undefined) {
             return true;
@@ -435,7 +605,7 @@ girderTest.waitForLoad = function (desc) {
             return false;
         }
         return !$('.modal').data('bs.modal').$backdrop;
-    }, 'for any modal dialog to be hidden' + desc);
+    }, 'any modal dialog to be hidden' + desc);
     waitsFor(function () {
         return girder.numberOutstandingRestRequests() === 0;
     }, 'rest requests to finish' + desc);
@@ -451,39 +621,65 @@ girderTest.waitForDialog = function (desc) {
     desc = desc ? ' (' + desc + ')' : '';
     /* It is faster to wait until the dialog is officially shown than to wait
      * for the backdrop.  This had been:
-    waitsFor(function() {
-        return $('#g-dialog-container:visible').length > 0 &&
-               $('.modal-backdrop:visible').length > 0;
-    }, 'a dialog to fully render'+desc);
+     waitsFor(function() {
+     return $('#g-dialog-container:visible').length > 0 &&
+     $('.modal-backdrop:visible').length > 0;
+     }, 'a dialog to fully render'+desc);
      */
     waitsFor(function () {
         return $('.modal').data('bs.modal') &&
-               $('.modal').data('bs.modal').isShown === true &&
-               $('#g-dialog-container:visible').length > 0;
+            $('.modal').data('bs.modal').isShown === true &&
+            $('#g-dialog-container:visible').length > 0;
     }, 'a dialog to fully render' + desc);
     waitsFor(function () {
         return girder.numberOutstandingRestRequests() === 0;
     }, 'dialog rest requests to finish' + desc);
 };
 
+(function () {
+    var defer = new $.Deferred();
+
+    /**
+     * Contains a promise that is resolved when blanket finishes instrumenting all
+     * requested sources.
+     */
+    girderTest.promise = defer.promise();
+
+    // Start attaching covered scripts *after* the page has loaded.
+    $(function () {
+        defer.resolve();
+    });
+})();
+
 /**
  * Import a javascript file and ask to register it with the blanket coverage
  * tests.
  */
 girderTest.addCoveredScript = function (url) {
-    if (window.blanket) {
-        blanket.utils.cache[url] = {};
-        blanket.utils.attachScript({url:url}, function (content) {
-            blanket.instrument({inputFile: content, inputFileName: url},
-                function (instrumented) {
-                    blanket.utils.cache[url].loaded = true;
-                    blanket.utils.blanketEval(instrumented);
-                    blanket.requiringFile(url, true);
-                });
-        });
-    } else {
-        $('<script/>', {src: url}).appendTo('head');
-    }
+    var defer = new $.Deferred();
+
+    girderTest.promise.then(function () {
+
+        if (window.blanket) {
+            blanket.requiringFile(url);
+            blanket.utils.cache[url] = {};
+            blanket.utils.attachScript({url: url}, function (content) {
+                blanket.instrument({inputFile: content, inputFileName: url},
+                                   function (instrumented) {
+                                       blanket.utils.cache[url].loaded = true;
+                                       blanket.utils.blanketEval(instrumented);
+                                       blanket.requiringFile(url, true);
+                                       defer.resolve();
+                                   });
+            });
+        } else {
+            $('<script/>', {src: url}).appendTo('head').on('load', function () {
+                defer.resolve();
+            });
+        }
+    });
+
+    girderTest.promise = defer.promise();
 };
 
 /**
@@ -508,8 +704,8 @@ girderTest.importStylesheet = function (css) {
  * For the current folder, check if it is public or private and take an action.
  * :param current: either 'public' or 'private': expect this value to match.
  * :param action: if 'public' or 'private', switch to that setting.
-  */
-girderTest.folderAccessControl = function (current, action) {
+ */
+girderTest.folderAccessControl = function (current, action, recurse) {
     waitsFor(function () {
         return $('.g-folder-access-button:visible').length === 1;
     }, 'folder access button to be available');
@@ -521,40 +717,32 @@ girderTest.folderAccessControl = function (current, action) {
 
     waitsFor(function () {
         return $('#g-dialog-container').hasClass('in') &&
-               $('#g-access-private:visible').is(':enabled');
+            $('#g-access-private:visible').is(':enabled');
     }, 'dialog and private access radio button to appear');
 
     runs(function () {
-        switch (current) {
-            case 'private':
-                expect($('#g-access-private:checked').length).toBe(1);
-                break;
-            case 'public':
-                expect($('#g-access-public:checked').length).toBe(1);
-                break;
-        }
-        switch (action) {
-            case 'private':
-                $('#g-access-private').click();
-                break;
-            case 'public':
-                $('#g-access-public').click();
-                break;
+        expect($('#g-access-' + current + ':checked').length).toBe(1);
+        $('#g-access-' + action).click();
+
+        if (recurse) {
+            $('#g-apply-recursive').click();
+        } else {
+            $('#g-apply-nonrecursive').click();
         }
     });
 
     waitsFor(function () {
         switch (action) {
-            case 'private':
-                if (!$('.radio.g-selected').text().match("Private").length) {
-                    return false;
-                }
-                break;
-            case 'public':
-                if (!$('.radio.g-selected').text().match("Public").length) {
-                    return false;
-                }
-                break;
+        case 'private':
+            if (!$('.radio.g-selected').text().match('Private').length) {
+                return false;
+            }
+            break;
+        case 'public':
+            if (!$('.radio.g-selected').text().match('Public').length) {
+                return false;
+            }
+            break;
         }
         return $('.g-save-access-list:visible').is(':enabled');
     }, 'access save button to appear');
@@ -570,6 +758,52 @@ girderTest.folderAccessControl = function (current, action) {
     }, 'access dialog to be hidden');
 };
 
+/**
+ * Use this to upload a binary file into the currently visible folder. We can't
+ * upload binary files correctly in phantom, so we rely on a special test-only
+ * endpoint to do the work for us.
+ *
+ * @param path should be specified relative to the root of the repository.
+ */
+girderTest.binaryUpload = function (path) {
+    var file;
+    var oldLen;
+
+    runs(function () {
+        var folderId = Backbone.history.fragment.split('/').pop();
+        oldLen = $('.g-item-list-entry').length;
+
+        girder.restRequest({
+            path: 'webclienttest/file',
+            type: 'POST',
+            data: {
+                path: path,
+                folderId: folderId
+            }
+        }).done(function (resp) {
+            file = resp;
+        }).error(function (resp) {
+            console.log('Could not complete simulated upload of ' + path + ' to ' + folderId);
+            console.log(resp.responseJSON.message);
+        });
+    });
+
+    waitsFor(function () {
+        return !!file;
+    }, 'simulated binary upload to finish');
+
+    runs(function () {
+        // Reload the current view
+        var old = Backbone.history.fragment;
+        Backbone.history.fragment = null;
+        girder.router.navigate(old, {trigger: true});
+    });
+
+    waitsFor(function () {
+        return $('.g-item-list-entry').length === oldLen + 1;
+    }, 'newly uploaded item to appear after refresh');
+};
+
 /* Test going to a particular route, waiting for the dialog or page to load
  *  fully, and then testing that we have what we expect.
  * Enter: route: the hash url fragment to go to.
@@ -583,21 +817,16 @@ girderTest.testRoute = function (route, hasDialog, testFunc) {
         if (route.indexOf('#') === 0) {
             route = route.substr(1);
         }
-        window.location.hash = route;
+        girder.router.navigate(route, {trigger: true});
     });
-    /* We need to let the window have a chance to reload, so we just release
-     * our time slice. */
-    waits(1);
+
     if (hasDialog) {
-        girderTest.waitForDialog('route: ' + route);
+        girderTest.waitForDialog('testRoute: waitForDialog failed, route=' + route);
     } else {
-        girderTest.waitForLoad('route: ' + route);
+        girderTest.waitForLoad('testRoute: waitForLoad failed, route=' + route);
     }
     if (testFunc) {
-        waitsFor(testFunc, 'route: ' + route);
-        runs(function () {
-            expect(testFunc()).toBe(true);
-        });
+        waitsFor(testFunc, 'testRoute: test function failed, route=' + route);
     }
 };
 
@@ -643,11 +872,9 @@ function _prepareTestUpload() {
                 newdata.append('offset', data.vals.offset);
                 newdata.append('uploadId', data.vals.uploadId);
                 var len = data.vals.chunk.size;
-                /* Note that this appears to fail if _uploadData contains
-                 * certain characters, such as LF. */
                 if (girderTest._uploadData.length &&
-                        girderTest._uploadData.length == len &&
-                        !girderTest._uploadDataExtra) {
+                    girderTest._uploadData.length === len &&
+                    !girderTest._uploadDataExtra) {
                     newdata.append('chunk', girderTest._uploadData);
                 } else {
                     newdata.append('chunk', new Array(
@@ -662,13 +889,12 @@ function _prepareTestUpload() {
                     this.setRequestHeader('x-amz-copy-source', 'bad_value');
                 }
                 if (girderTest._uploadData.length &&
-                        girderTest._uploadData.length == data.size &&
-                        !girderTest._uploadDataExtra) {
+                    girderTest._uploadData.length === data.size &&
+                    !girderTest._uploadDataExtra) {
                     data = girderTest._uploadData;
                 } else {
                     data = new Array(
-                        data.size + 1 + girderTest._uploadDataExtra
-                        ).join('-');
+                        data.size + 1 + girderTest._uploadDataExtra).join('-');
                 }
             }
             impl.call(this, data);
@@ -678,11 +904,15 @@ function _prepareTestUpload() {
     girderTest._preparedTestUpload = true;
 }
 
-girderTest.sendFile = function (uploadItem) {
+girderTest.sendFile = function (uploadItem, selector) {
     // Incantation that causes the phantom environment to send us a File.
-    $('#g-files').parent().removeClass('hide');
-    var params = {action: 'uploadFile', selector: '#g-files',
-                  suffix: girderTest._uploadSuffix};
+    selector = selector || '#g-files';
+    $(selector).parent().removeClass('hide');
+    var params = {
+        action: 'uploadFile',
+        selector: selector,
+        suffix: girderTest._uploadSuffix
+    };
     if (uploadItem === parseInt(uploadItem)) {
         params.size = uploadItem;
     } else {
@@ -716,7 +946,7 @@ girderTest.testUpload = function (uploadItem, needResume, error) {
 
     waitsFor(function () {
         return $('.g-drop-zone:visible').length > 0 &&
-               $('.modal-dialog:visible').length > 0;
+            $('.modal-dialog:visible').length > 0;
     }, 'the upload dialog to appear');
 
     runs(function () {
@@ -741,7 +971,7 @@ girderTest.testUpload = function (uploadItem, needResume, error) {
     if (needResume) {
         waitsFor(function () {
             return $('.g-resume-upload:visible').length > 0 ||
-                   $('.g-restart-upload:visible').length > 0;
+                $('.g-restart-upload:visible').length > 0;
         }, 'the resume link to appear');
         runs(function () {
             if (error) {
@@ -750,28 +980,166 @@ girderTest.testUpload = function (uploadItem, needResume, error) {
             }
             girderTest._uploadDataExtra = 0;
 
-            if (needResume == 'abort') {
+            if (needResume === 'abort') {
                 $('.btn-default').click();
                 orig_len -= 1;
-            } else {
+            } else if ($('.g-resume-upload:visible').length > 0) {
                 $('.g-resume-upload').click();
+            } else {
+                $('.g-restart-upload').click();
             }
         });
     }
 
     waitsFor(function () {
         return $('.modal-content:visible').length === 0 &&
-               $('.g-item-list-entry').length === orig_len + 1;
+            $('.g-item-list-entry').length === orig_len + 1;
     }, 'the upload to finish');
     girderTest.waitForLoad();
 
-    window.callPhantom(
-        {action: 'uploadCleanup',
-        suffix: girderTest._uploadSuffix});
+    runs(function () {
+        window.callPhantom(
+            {action: 'uploadCleanup',
+             suffix: girderTest._uploadSuffix});
+    });
+};
+
+/* Test upload drop events.  The drag and drop events are artificially
+ * constructed, so this isn't a perfect test.  It will exercise the event
+ * callbacks, however.
+ *
+ * @param itemSize: the size of the item to drop.
+ * @param multiple: if a number, try to drop this many items.  Only one item is
+ *                  ever actually uploaded, because phantomjs doesn't support
+ *                  multiple items at one time, but this simulates dropping
+ *                  multiples.
+ */
+girderTest.testUploadDrop = function (itemSize, multiple) {
+    var orig_len;
+
+    waitsFor(function () {
+        return $('.g-upload-here-button').length > 0;
+    }, 'the upload here button to appear');
+
+    runs(function () {
+        orig_len = $('.g-item-list-entry').length;
+        $('.g-upload-here-button').click();
+    });
+
+    waitsFor(function () {
+        return $('.g-drop-zone:visible').length > 0 &&
+            $('.modal-dialog:visible').length > 0;
+    }, 'the upload dialog to appear');
+
+    girderTest.testUploadDropAction(itemSize, multiple);
+
+    waitsFor(function () {
+        return $('.g-overall-progress-message').text().indexOf('Selected') >= 0;
+    }, 'the file to be listed');
+
+    runs(function () {
+        girderTest._uploadDataExtra = 0;
+        girderTest.sendFile(itemSize);
+    });
+
+    waitsFor(function () {
+        return $('.g-overall-progress-message i.icon-ok').length > 0;
+    }, 'the file to be received');
+
+    runs(function () {
+        $('#g-files').parent().addClass('hide');
+        $('.g-start-upload').click();
+    });
+
+    waitsFor(function () {
+        return $('.modal-content:visible').length === 0 &&
+            $('.g-item-list-entry').length === orig_len + 1;
+    }, 'the upload to finish');
+    girderTest.waitForLoad();
+
+    runs(function () {
+        window.callPhantom(
+            {action: 'uploadCleanup',
+             suffix: girderTest._uploadSuffix});
+    });
+};
+
+/* Perform the drag and drop on an upload element.
+ *
+ * @param itemSize: the size of the item to drop.
+ * @param multiple: if a number, try to drop this many items.  Only one item is
+ *                  ever actually uploaded, because phantomjs doesn't support
+ *                  multiple items at one time, but this simulates dropping
+ *                  multiples.
+ * @param selector: drop zone selector.  Default is .g-drop-zone.
+ * @param dropActiveSelector: a selector that is only visible when the drop is
+ *                            targeted correctly.  Default is .g-dropzone-show.
+ */
+girderTest.testUploadDropAction = function (itemSize, multiple, selector, dropActiveSelector) {
+    var files = [], i;
+    multiple = multiple || 1;
+    selector = selector || '.g-drop-zone';
+    dropActiveSelector = (dropActiveSelector || '.g-dropzone-show') + ':visible';
+
+    for (i = 0; i < multiple; i += 1) {
+        files.push({
+            name: 'upload' + i + '.tmp',
+            size: itemSize
+        });
+    }
+
+    _prepareTestUpload();
+
+    runs(function () {
+        $(selector).trigger($.Event('dragenter', {originalEvent: {dataTransfer: {}}}));
+    });
+
+    waitsFor(function () {
+        return $(dropActiveSelector).length > 0;
+    }, 'the drop bullseye to appear');
+
+    runs(function () {
+        $(selector).trigger($.Event('dragleave'));
+    });
+
+    waitsFor(function () {
+        return $(dropActiveSelector).length === 0;
+    }, 'the drop bullseye to disappear');
+
+    runs(function () {
+        $(selector).trigger($.Event('dragenter', {originalEvent: {dataTransfer: {}}}));
+    });
+
+    waitsFor(function () {
+        return $(dropActiveSelector).length > 0;
+    }, 'the drop bullseye to appear');
+
+    runs(function () {
+        /* Try dropping nothing */
+        $(selector).trigger($.Event('dragover', {originalEvent: {dataTransfer: {}}}));
+        $(selector).trigger($.Event('drop', {originalEvent: {dataTransfer: {files: []}}}));
+    });
+
+    waitsFor(function () {
+        return $(dropActiveSelector).length === 0;
+    }, 'the drop bullseye to disappear');
+
+    runs(function () {
+        $(selector).trigger($.Event('dragenter', {originalEvent: {dataTransfer: {}}}));
+    });
+
+    waitsFor(function () {
+        return $(dropActiveSelector).length > 0;
+    }, 'the drop bullseye to appear');
+
+
+    runs(function () {
+        $(selector).trigger($.Event('drop', {originalEvent: {dataTransfer: {files: files}}}));
+    });
 };
 
 /* Wait for a dialog to be present with a confirm button, then select the
- * confirm button and wait for teh dialog to be hidden.
+ * confirm button and wait for the dialog to be hidden.
  */
 girderTest.confirmDialog = function () {
     girderTest.waitForDialog('wait for confirmation');
@@ -783,3 +1151,143 @@ girderTest.confirmDialog = function () {
     });
     girderTest.waitForLoad();
 };
+
+girderTest.shimBlobBuilder = function () {
+    var oldPrototype = window.Blob.prototype;
+    window.BlobBuilder = window.BlobBuilder || window.WebKitBlobBuilder;
+    window.Blob = function (data) {
+        var builder = new window.BlobBuilder();
+        _.each(data, function (d) {
+            builder.append(d);
+        });
+        return builder.getBlob();
+    };
+    window.Blob.prototype = oldPrototype;
+};
+
+/*
+ * Loads a particular fragment as anonymous and checks whether the login dialog
+ * appears.  Assumes you are logged out, or else you should pass logoutFirst=true.
+ * If you would like the system to log back in at the end of this function,
+ * pass a loginFunction to be called.
+ */
+girderTest.anonymousLoadPage = function (logoutFirst, fragment, hasLoginDialog, loginFunction) {
+    /*
+     * :param logoutFirst: boolean, whether this function should log out the current user
+     *                     before loading the fragment.
+     * :param fragment: URL fragment to load.
+     * :param hasLoginDialog: boolean, whether the page loaded at the fragment's route should
+     *                        display a login dialog.
+     * :param loginFunction: function, if passed, the loginFunction will be called at the end of
+     *                       this function to log the user back in.
+     */
+    if (logoutFirst) {
+        girderTest.logout()();
+    }
+    girderTest.testRoute(fragment, hasLoginDialog);
+    if (hasLoginDialog) {
+        girderTest.waitForDialog();
+
+        waitsFor(function () {
+            return $('input#g-login').length > 0;
+        }, 'login dialog to appear');
+
+        runs(function () {
+            $('.modal-header .close').click();
+        });
+
+        girderTest.waitForLoad();
+    }
+    girderTest.testRoute('', false);
+    if (loginFunction) {
+        loginFunction();
+    }
+};
+
+/*
+ * Instrument ajax calls to record all communication with the server
+ * so we can print the log after a test failure.
+ */
+(function () {
+    var ajax_calls = [];
+    var backbone_ajax = Backbone.ajax;
+
+    Backbone.ajax = function () {
+        var opts = {}, record;
+
+        if (arguments.length === 1) {
+            opts = arguments[0];
+            if (typeof opts === 'string') {
+                opts = {url: opts};
+            }
+        } else if (arguments.length === 2) {
+            opts = arguments[1];
+            opts.url = arguments[0];
+        }
+
+        record = {
+            opts: opts
+        };
+
+        ajax_calls.push(record);
+
+        return backbone_ajax(opts).done(
+            function (data, textStatus) {
+                record.status = textStatus;
+                record.result = data;
+            }
+        ).fail(function (jqxhr, textStatus, errorThrown) {
+                record.status = textStatus;
+                record.errorThrown = errorThrown;
+        });
+    };
+
+    girderTest.ajaxLog = function (reset) {
+        var calls = ajax_calls;
+        if (reset) {
+            ajax_calls = [];
+        }
+        return calls;
+    };
+}());
+
+/*
+ * Provide an alternate path to injecting a test spec as a url query parameter.
+ *
+ * To use, start girder in testing mode: `python -m girder --testing` and
+ * browse to the test html with a spec provided:
+ *
+ *   http://localhost:8080/static/built/testEnv.html?spec=%2Fclients%2Fweb%2Ftest%2Fspec%2FversionSpec.js
+ *
+ * Note: the path to the spec file must be url encoded.
+ */
+$(function () {
+    var specs = [];
+    document.location.search.substring(1).split('&').forEach(function (query) {
+        query = query.split('=');
+        if (query.length > 1 && query[0] === 'spec') {
+            specs.push($.getScript(decodeURIComponent(query[1])));
+        }
+    });
+});
+
+/**
+ * Wait for all of the sources to load and then start the main girder application.
+ * This will also delay the invocation of the jasmine test suite until after the
+ * application is running.  This method returns a promise that resolves with the
+ * application object.
+ */
+girderTest.startApp = function () {
+    var defer = new $.Deferred();
+    girderTest.promise.then(function () {
+        girder.events.trigger('g:appload.before');
+        var app = new girder.App({
+            el: 'body',
+            parentView: null
+        });
+        girder.events.trigger('g:appload.after');
+        defer.resolve(app);
+    });
+    girderTest.promise = defer.promise();
+    return girderTest.promise;
+}

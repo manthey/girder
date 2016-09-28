@@ -4,6 +4,7 @@
  * other than "append"). We fake the chunk request to get around this by
  * wrapping XHR.prototype.send.
  */
+/* globals girderTest, describe, it, runs, expect, waitsFor, spyOn */
 
 /* used for adjusting minimum upload size */
 var minUploadSize;
@@ -15,8 +16,8 @@ var minUploadSize;
  *                 minimums.
  */
 function _setMinimumChunkSize(minSize) {
-    if (!minUploadSize)
-    {
+    var uploadChunkSize, settingSize;
+    if (!minUploadSize) {
         minUploadSize = {UPLOAD_CHUNK_SIZE: girder.UPLOAD_CHUNK_SIZE};
         var resp = girder.restRequest({
             path: 'system/setting',
@@ -26,15 +27,12 @@ function _setMinimumChunkSize(minSize) {
         });
         minUploadSize.setting = resp.responseText;
     }
-    if (!minSize)
-    {
-        var uploadChunkSize = minUploadSize.UPLOAD_CHUNK_SIZE;
-        var settingSize = minUploadSize.setting;
-    }
-    else
-    {
-        var uploadChunkSize = minSize;
-        var settingSize = minSize;
+    if (!minSize) {
+        uploadChunkSize = minUploadSize.UPLOAD_CHUNK_SIZE;
+        settingSize = minUploadSize.setting;
+    } else {
+        uploadChunkSize = minSize;
+        settingSize = minSize;
     }
     girder.UPLOAD_CHUNK_SIZE = uploadChunkSize;
     girder.restRequest({
@@ -49,7 +47,7 @@ function _setMinimumChunkSize(minSize) {
  * Intercept window.location.assign calls so we can test the behavior of,
  * e.g. download directives that occur from js.
  */
-(function (impl) {
+(function () {
     window.location.assign = function (url) {
         girderTest._redirect = url;
     };
@@ -58,18 +56,9 @@ function _setMinimumChunkSize(minSize) {
 /**
  * Start the girder backbone app.
  */
-$(function () {
-    girder.events.trigger('g:appload.before');
-    var app = new girder.App({
-        el: 'body',
-        parentView: null
-    });
-    girder.events.trigger('g:appload.after');
-});
+girderTest.startApp();
 
 describe('Create a data hierarchy', function () {
-    var folder;
-
     it('register a user',
         girderTest.createUser('johndoe',
                               'john.doe@email.com',
@@ -90,10 +79,13 @@ describe('Create a data hierarchy', function () {
         girderTest.waitForLoad();
 
         waitsFor(function () {
-            return $('li.g-folder-list-entry').length > 0;
+            // Wait for folders to show, and also the folder count
+            return $('li.g-folder-list-entry').length > 0 &&
+                $('.g-subfolder-count').text() === '2';
         }, 'my folders list to display');
 
         runs(function () {
+            expect($('.g-item-count').length).toBe(0);
             expect($('a.g-folder-list-link:first').text()).toBe('Private');
             expect($('.g-folder-privacy:first').text()).toBe('Private');
             $('a.g-folder-list-link:first').click();
@@ -116,8 +108,9 @@ describe('Create a data hierarchy', function () {
         girderTest.waitForDialog();
 
         runs(function () {
-            $('input#g-name').val("John's subfolder");
-            $('#g-description').val(' Some description');
+            $('input#g-name').val('John\'s subfolder');
+            $('.g-description-editor-container .g-markdown-text').val(
+                ' Some description');
 
             $('.g-save-folder').click();
         });
@@ -129,18 +122,34 @@ describe('Create a data hierarchy', function () {
 
         runs(function () {
             expect($('a.g-folder-list-link:first').text()).toBe(
-                "John's subfolder");
+                'John\'s subfolder');
             expect($('.g-folder-privacy:first').text()).toBe('Private');
-            $('a.g-folder-list-link:first').click();
         });
-        girderTest.waitForLoad();
+
+        // Recursively set this folder to public
+        girderTest.folderAccessControl('private', 'public', true);
+
+        waitsFor(function () {
+            return $('.g-folder-privacy:first').text() === 'Public';
+        }, 'public flag to propagate to subfolder');
+
+        // Change back to private
+        girderTest.folderAccessControl('public', 'private', true);
 
         runs(function () {
+            $('a.g-folder-list-link:first').click();
+        });
+
+        girderTest.waitForLoad();
+        runs(function () {
+            // Description of current node should appear in breadcrumb bar
+            expect($('.g-hierarchy-breadcrumb-bar').text()).toContain('Some description');
             $('a.g-edit-folder').click();
         });
 
         waitsFor(function () {
-            return $('textarea#g-description').val() === 'Some description';
+            return $('.g-description-editor-container .g-markdown-text').val() ===
+                'Some description';
         }, 'the edit folder dialog to appear');
         girderTest.waitForDialog();
 
@@ -156,6 +165,15 @@ describe('Create a data hierarchy', function () {
 
     it('upload a file into the current folder', function () {
         girderTest.testUpload('clients/web/test/testFile.txt');
+
+        waitsFor(function () {
+            return $('.g-child-count-container .g-item-count').text() === '1';
+        }, 'Item count to increment after upload.');
+
+        runs(function () {
+            expect($('.g-item-count').text()).toBe('1');
+            expect($('.g-subfolder-count').text()).toBe('0');
+        });
     });
 
     it('download the file', function () {
@@ -197,7 +215,7 @@ describe('Create a data hierarchy', function () {
         });
         waitsFor(function () {
             return $('.g-quick-search-container .g-search-results')
-                .hasClass('open') == false;
+                .hasClass('open') === false;
         }, 'search to return');
         runs(function () {
             $('.g-quick-search-container input.g-search-field')
@@ -223,12 +241,12 @@ describe('Create a data hierarchy', function () {
     });
     it('keyboard control of quick search box', function () {
         function sendKeyDown(code, selector) {
-            var e = $.Event("keydown");
+            var e = $.Event('keydown');
             e.which = code;
             $(selector).trigger(e);
         }
         runs(function () {
-            for (var i=1; i<=4; i++) {
+            for (var i = 1; i <= 4; i += 1) {
                 $('.g-quick-search-container input.g-search-field')
                     .val('john'.substr(0, i)).trigger('input');
             }
@@ -261,7 +279,7 @@ describe('Create a data hierarchy', function () {
         });
 
         waitsFor(function () {
-            return $('.g-loading-block').length == 0;
+            return $('.g-loading-block').length === 0;
         }, 'for all blocks to load');
 
         girderTest.testUpload('clients/web/test/testFile2');
@@ -321,7 +339,7 @@ describe('Create a data hierarchy', function () {
         var redirect, widget;
         /* select a folder and the first item */
         runs(function () {
-            $('.g-list-checkbox').slice(0,2).click();
+            $('.g-list-checkbox').slice(0, 2).click();
         });
         waitsFor(function () {
             return $('.g-checked-actions-menu').length > 0 &&
@@ -335,14 +353,16 @@ describe('Create a data hierarchy', function () {
             spyOn(widget, 'redirectViaForm').
                   andCallFake(function (method, url, data) {
                 redirect = {method: method, url: url, data: data};
+                /* jshint scripturl: true */
                 widget.redirectViaForm.originalValue(
                     method, 'javascript: void(0)', data);
+                /* jshint scripturl: false */
             });
             $('a.g-download-checked').click();
         });
         runs(function () {
             expect(widget.redirectViaForm).toHaveBeenCalled();
-            expect(redirect.method).toBe('GET');
+            expect(redirect.method).toBe('POST');
             expect(/^http:\/\/localhost:.*\/api\/v1\/resource\/download.*/.
                    test(redirect.url)).toBe(true);
             expect(/{"folder":.*,"item":.*}/.test(redirect.data.resources)).
@@ -354,8 +374,8 @@ describe('Create a data hierarchy', function () {
             $('.g-select-all').click();
         });
         waitsFor(function () {
-            return $('.g-list-checkbox:not(:checked)').length == 0 &&
-                   $('.g-checked-actions-button:disabled').length == 0;
+            return $('.g-list-checkbox:not(:checked)').length === 0 &&
+                   $('.g-checked-actions-button:disabled').length === 0;
         }, 'all items to be checked');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -368,7 +388,7 @@ describe('Create a data hierarchy', function () {
             $('a.g-pick-checked').click();
         });
         waitsFor(function () {
-            return $('.g-checked-actions-menu:visible').length == 0;
+            return $('.g-checked-actions-menu:visible').length === 0;
         }, 'checked actions menu to hide');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -381,10 +401,10 @@ describe('Create a data hierarchy', function () {
             $('a.g-copy-picked').click();
         });
         waitsFor(function () {
-            return $('.g-task-progress-title').text() == 'Copying resources';
+            return $('.g-task-progress-title').text().indexOf('Copying resources') !== -1;
         }, 'progress to be shown');
         waitsFor(function () {
-            return $('.g-list-checkbox').length == 12;
+            return $('.g-list-checkbox').length === 12;
         }, 'items to be copied');
     });
     it('move picked items', function () {
@@ -392,8 +412,8 @@ describe('Create a data hierarchy', function () {
             $('.g-list-checkbox:last').click();
         });
         waitsFor(function () {
-            return $('.g-list-checkbox:checked').length == 1 &&
-                   $('.g-checked-actions-button:disabled').length == 0;
+            return $('.g-list-checkbox:checked').length === 1 &&
+                   $('.g-checked-actions-button:disabled').length === 0;
         }, 'one item to be checked');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -406,17 +426,17 @@ describe('Create a data hierarchy', function () {
             $('a.g-pick-checked').click();
         });
         waitsFor(function () {
-            return $('.g-checked-actions-menu:visible').length == 0;
+            return $('.g-checked-actions-menu:visible').length === 0;
         }, 'checked actions menu to hide');
         /* select a second item and add it to our picked list */
         runs(function () {
             $('.g-select-all').click();
             $('.g-select-all').click();
-            $('.g-list-checkbox').slice(-2,-1).click();
+            $('.g-list-checkbox').slice(-2, -1).click();
         });
         waitsFor(function () {
-            return $('.g-list-checkbox:checked').length == 1 &&
-                   $('.g-checked-actions-button:disabled').length == 0;
+            return $('.g-list-checkbox:checked').length === 1 &&
+                   $('.g-checked-actions-button:disabled').length === 0;
         }, 'one item to be checked');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -429,7 +449,7 @@ describe('Create a data hierarchy', function () {
             $('a.g-pick-checked').click();
         });
         waitsFor(function () {
-            return $('.g-checked-actions-menu:visible').length == 0;
+            return $('.g-checked-actions-menu:visible').length === 0;
         }, 'checked actions menu to hide');
         /* add the first folder to our picked list */
         runs(function () {
@@ -438,8 +458,8 @@ describe('Create a data hierarchy', function () {
             $('.g-list-checkbox:first').click();
         });
         waitsFor(function () {
-            return $('.g-list-checkbox:checked').length == 1 &&
-                   $('.g-checked-actions-button:disabled').length == 0;
+            return $('.g-list-checkbox:checked').length === 1 &&
+                   $('.g-checked-actions-button:disabled').length === 0;
         }, 'one item to be checked');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -452,7 +472,7 @@ describe('Create a data hierarchy', function () {
             $('a.g-pick-checked').click();
         });
         waitsFor(function () {
-            return $('.g-checked-actions-menu:visible').length == 0;
+            return $('.g-checked-actions-menu:visible').length === 0;
         }, 'checked actions menu to hide');
         /* Navigate to the user page and make sure move and copy are no longer
          * offered, since we can't move items to a user. */
@@ -460,8 +480,8 @@ describe('Create a data hierarchy', function () {
             $('.g-breadcrumb-link:first').click();
         });
         waitsFor(function () {
-            return $('.g-list-checkbox').length == 2 &&
-                   $('.g-checked-actions-button:disabled').length == 0;
+            return $('.g-list-checkbox').length === 2 &&
+                   $('.g-checked-actions-button:disabled').length === 0;
         }, 'just two folders to be visible');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -477,8 +497,8 @@ describe('Create a data hierarchy', function () {
         });
         girderTest.waitForLoad();
         waitsFor(function () {
-            return $('.g-list-checkbox').length == 0 &&
-                   $('.g-empty-parent-message').length == 1;
+            return $('.g-list-checkbox').length === 0 &&
+                   $('.g-empty-parent-message').length === 1;
         }, 'Public folder to be visible');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -491,7 +511,7 @@ describe('Create a data hierarchy', function () {
             $('a.g-move-picked').click();
         });
         waitsFor(function () {
-            return $('.g-list-checkbox').length == 3;
+            return $('.g-list-checkbox').length === 3;
         }, 'items to be copied');
         /* Change the permission of the moved folder, then navigate back to the
          * private folder, to save the public data for permissions tests. */
@@ -500,22 +520,22 @@ describe('Create a data hierarchy', function () {
         });
         girderTest.waitForLoad();
         waitsFor(function () {
-            return $('.g-list-checkbox').length == 1;
+            return $('.g-list-checkbox').length === 1;
         }, 'subfolder to be shown');
         girderTest.folderAccessControl('private', 'public');
         runs(function () {
             $('.g-breadcrumb-link:first').click();
         });
         waitsFor(function () {
-            return $('.g-list-checkbox').length == 2 &&
-                   $('.g-checked-actions-button:disabled').length == 1;
+            return $('.g-list-checkbox').length === 2 &&
+                   $('.g-checked-actions-button:disabled').length === 1;
         }, 'just two folders to be visible and no picked items');
         runs(function () {
             $('a.g-folder-list-link:first').click();
         });
         girderTest.waitForLoad();
         waitsFor(function () {
-            return $('.g-list-checkbox').length == 9;
+            return $('.g-list-checkbox').length === 9;
         }, 'private list should be down to nine items');
     });
     it('delete checked items', function () {
@@ -523,8 +543,8 @@ describe('Create a data hierarchy', function () {
             $('.g-select-all').click();
         });
         waitsFor(function () {
-            return $('.g-list-checkbox:not(:checked)').length == 0 &&
-                   $('.g-checked-actions-button:disabled').length == 0;
+            return $('.g-list-checkbox:not(:checked)').length === 0 &&
+                   $('.g-checked-actions-button:disabled').length === 0;
         }, 'all items to be checked');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -545,7 +565,7 @@ describe('Create a data hierarchy', function () {
         });
 
         waitsFor(function () {
-            return $('.g-list-checkbox').length == 0;
+            return $('.g-list-checkbox').length === 0;
         }, 'items to be deleted');
         runs(function () {
             window.callPhantom({action: 'uploadCleanup',
@@ -561,21 +581,45 @@ describe('Create a data hierarchy', function () {
                               'Doe',
                               'password!'));
     it('test copy permissions', function () {
+        // navigate back to John Doe's Public folder
+        girderTest.goToUsersPage()();
+        runs(function () {
+            $('.g-quick-search-container input.g-search-field')
+                .val('john').trigger('input');
+        });
+        waitsFor(function () {
+            return $('.g-quick-search-container .g-search-results')
+                .hasClass('open');
+        }, 'search to return');
+
+        runs(function () {
+            var results = $('.g-quick-search-container li.g-search-result');
+            expect(results.length).toBe(2);
+
+            expect(results.find('a[resourcetype="folder"]').length).toBe(1);
+            expect(results.find('a[resourcetype="user"]').length).toBe(1);
+
+            results.find('a[resourcetype="user"]').click();
+        });
+
         var oldPicked;
+        waitsFor(function () {
+            return $('.g-list-checkbox').length === 1;
+        }, 'User folders to be shown');
         runs(function () {
             $('a.g-folder-list-link:first').click();
         });
         girderTest.waitForLoad();
         waitsFor(function () {
-            return $('.g-list-checkbox').length == 3;
-        }, 'public folder to be shown');
+            return $('.g-list-checkbox').length === 3;
+        }, 'Public folder to be shown');
         /* Select one item and make sure we can't copy or move */
         runs(function () {
             $('.g-list-checkbox:last').click();
         });
         waitsFor(function () {
-            return $('.g-list-checkbox:checked').length == 1 &&
-                   $('.g-checked-actions-button:disabled').length == 0;
+            return $('.g-list-checkbox:checked').length === 1 &&
+                   $('.g-checked-actions-button:disabled').length === 0;
         }, 'one item to be checked');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -588,7 +632,7 @@ describe('Create a data hierarchy', function () {
             $('a.g-pick-checked').click();
         });
         waitsFor(function () {
-            return $('.g-checked-actions-menu:visible').length == 0;
+            return $('.g-checked-actions-menu:visible').length === 0;
         }, 'checked actions menu to hide');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -604,7 +648,7 @@ describe('Create a data hierarchy', function () {
             $('.g-clear-picked').click();
         });
         waitsFor(function () {
-            return $('.g-checked-actions-menu:visible').length == 0;
+            return $('.g-checked-actions-menu:visible').length === 0;
         }, 'checked actions menu to hide');
         /* Select one folder and make sure we can't move or copy. */
         runs(function () {
@@ -613,8 +657,8 @@ describe('Create a data hierarchy', function () {
             $('.g-list-checkbox:first').click();
         });
         waitsFor(function () {
-            return $('.g-list-checkbox:checked').length == 1 &&
-                   $('.g-checked-actions-button:disabled').length == 0;
+            return $('.g-list-checkbox:checked').length === 1 &&
+                   $('.g-checked-actions-button:disabled').length === 0;
         }, 'one folder to be checked');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -627,7 +671,7 @@ describe('Create a data hierarchy', function () {
             $('a.g-pick-checked').click();
         });
         waitsFor(function () {
-            return $('.g-checked-actions-menu:visible').length == 0;
+            return $('.g-checked-actions-menu:visible').length === 0;
         }, 'checked actions menu to hide');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -642,14 +686,14 @@ describe('Create a data hierarchy', function () {
             $('#g-app-body-container').click();
         });
         waitsFor(function () {
-            return $('.g-checked-actions-menu:visible').length == 0;
+            return $('.g-checked-actions-menu:visible').length === 0;
         }, 'checked actions menu to hide');
         girderTest.goToUsersPage()();
         runs(function () {
             $('.g-user-link:first').click();
         });
         waitsFor(function () {
-            return $('.g-list-checkbox').length == 2;
+            return $('.g-list-checkbox').length === 2;
         }, 'user folders to be shown');
         runs(function () {
             $('.g-checked-actions-button').click();
@@ -665,10 +709,10 @@ describe('Create a data hierarchy', function () {
             $('#g-app-body-container').click();
         });
         waitsFor(function () {
-            return $('.g-checked-actions-menu:visible').length == 0;
+            return $('.g-checked-actions-menu:visible').length === 0;
         }, 'checked actions menu to hide');
         runs(function () {
-            /* Skip a bunch of UI actiosn to more quickly get back to have one
+            /* Skip a bunch of UI actions to more quickly get back to have one
              * item selected. */
             girder.pickedResources = oldPicked;
             $('a.g-folder-list-link:first').click();
@@ -690,6 +734,13 @@ describe('Create a data hierarchy', function () {
             expect($('a.g-copy-picked').length).toBe(1);
             $('#g-app-body-container').click();
         });
+    });
+
+    it('upload a file by dropping', function () {
+        girderTest.testUploadDrop(10);
+    });
+    it('upload two files by dropping', function () {
+        girderTest.testUploadDrop(10, 2);
     });
 
     it('logout from second user', girderTest.logout('logout from second user'));
@@ -735,25 +786,16 @@ describe('Test FileModel static upload functions', function () {
         }, 'item creation');
     });
 
-    var oldPrototype = window.Blob.prototype;
-    window.BlobBuilder = window.BlobBuilder || window.WebKitBlobBuilder;
-    window.Blob = function (data) {
-        var builder = new BlobBuilder();
-        _.each(data, function (d) {
-            builder.append(d);
-        });
-        return builder.getBlob();
-    };
-    window.Blob.prototype = oldPrototype;
+    girderTest.shimBlobBuilder();
 
     it('test FileModel.uploadToFolder()', function () {
-        var ok = false, text, filename, speech, fileModel, file;
+        var text, filename, speech, fileModel, file;
 
         filename = 'hal.txt';
 
         // TODO: replace this with the "correct" mechanism for handling text
         // with Jasmine (cc @manthey).
-        girderTest._uploadData = speech = "Just what do you think you're doing, Dave?";
+        girderTest._uploadData = speech = 'Just what do you think you\'re doing, Dave?';
 
         runs(function () {
             fileModel = new girder.models.FileModel();
@@ -762,7 +804,7 @@ describe('Test FileModel static upload functions', function () {
 
         waitsFor(function () {
             return !fileModel.isNew();
-        }, "file model to become valid");
+        }, 'file model to become valid');
 
         runs(function () {
             var item;
@@ -771,8 +813,8 @@ describe('Test FileModel static upload functions', function () {
                 path: '/item',
                 type: 'GET',
                 data: {
-                    folderId: folder.get("_id"),
-                    text: filename,
+                    folderId: folder.get('_id'),
+                    text: filename
                 },
                 async: false
             });
@@ -788,7 +830,7 @@ describe('Test FileModel static upload functions', function () {
             file = file && file.responseJSON && file.responseJSON[0];
 
             if (file) {
-                resp = girder.restRequest({
+                var resp = girder.restRequest({
                     path: '/file/' + file._id + '/download',
                     type: 'GET',
                     dataType: 'text',
@@ -800,18 +842,18 @@ describe('Test FileModel static upload functions', function () {
         });
 
         waitsFor(function () {
-            return file._id === fileModel.get("_id") && file.name === filename && text === speech;
+            return file._id === fileModel.get('_id') && file.name === filename && text === speech;
         });
     });
 
     it('test FileModel.uploadToItem()', function () {
-        var ok = false, text, filename, speech, file, fileModel;
+        var text, filename, speech, file, fileModel;
 
         filename = 'dave.txt';
 
         // TODO: replace this with the "correct" mechanism for handling text
         // with Jasmine (cc @manthey).
-        girderTest._uploadData = speech = "Open the pod bay doors, HAL.";
+        girderTest._uploadData = speech = 'Open the pod bay doors, HAL.';
 
         runs(function () {
             fileModel = new girder.models.FileModel();
@@ -832,7 +874,7 @@ describe('Test FileModel static upload functions', function () {
             file = file && file.responseJSON && file.responseJSON[0];
 
             if (file) {
-                resp = girder.restRequest({
+                var resp = girder.restRequest({
                     path: '/file/' + file._id + '/download',
                     type: 'GET',
                     dataType: 'text',
@@ -844,7 +886,7 @@ describe('Test FileModel static upload functions', function () {
         });
 
         waitsFor(function () {
-            return file._id === fileModel.get("_id") && file.name === filename && text === speech;
+            return file._id === fileModel.get('_id') && file.name === filename && text === speech;
         });
     });
 

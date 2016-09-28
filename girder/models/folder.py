@@ -21,13 +21,14 @@ import copy
 import datetime
 import json
 import os
+import six
 
 from bson.objectid import ObjectId
 from .model_base import AccessControlledModel, ValidationException, \
     GirderException
 from girder import events
 from girder.constants import AccessType
-from girder.utility.progress import setResponseTimeLimit
+from girder.utility.progress import noProgress, setResponseTimeLimit
 
 
 class Folder(AccessControlledModel):
@@ -53,9 +54,17 @@ class Folder(AccessControlledModel):
             'size', 'meta', 'parentId', 'parentCollection', 'creatorId',
             'baseParentType', 'baseParentId'))
 
-    def filter(self, folder, user):
-        """Preserved override for kwarg backwards compatibility."""
-        return AccessControlledModel.filter(self, doc=folder, user=user)
+    def filter(self, *args, **kwargs):
+        """
+        Preserved override for kwarg backwards compatibility. Prior to the
+        refactor for centralizing model filtering, this method's first formal
+        parameter was called "folder", whereas the centralized version's first
+        parameter is called "doc". This override simply detects someone using
+        the old kwarg and converts it to the new form.
+        """
+        if 'folder' in kwargs:
+            args = [kwargs.pop('folder')] + list(args)
+        return super(Folder, self).filter(*args, **kwargs)
 
     def validate(self, doc, allowRename=False):
         """
@@ -65,7 +74,7 @@ class Folder(AccessControlledModel):
         :param doc: the folder document to validate.
         :param allowRename: if True and a folder or item exists with the same
                             name, rename the folder so that it is unique.
-        :return doc: the validated folder document.
+        :returns: the validated folder document.
         """
         doc['name'] = doc['name'].strip()
         doc['lowerName'] = doc['name'].lower()
@@ -89,7 +98,7 @@ class Folder(AccessControlledModel):
             }
             if '_id' in doc:
                 q['_id'] = {'$ne': doc['_id']}
-            dupFolder = self.model('folder').findOne(q, fields=['_id'])
+            dupFolder = self.findOne(q, fields=['_id'])
             if doc['parentCollection'] == 'folder':
                 q = {
                     'folderId': doc['parentId'],
@@ -136,9 +145,9 @@ class Folder(AccessControlledModel):
             baseParent = pathFromRoot[0]
             doc['baseParentId'] = baseParent['object']['_id']
             doc['baseParentType'] = baseParent['type']
-            self.save(doc, triggerEvents=False)
+            doc = self.save(doc, triggerEvents=False)
         if doc is not None and 'lowerName' not in doc:
-            self.save(doc, triggerEvents=False)
+            doc = self.save(doc, triggerEvents=False)
 
         return doc
 
@@ -161,8 +170,8 @@ class Folder(AccessControlledModel):
 
     def setMetadata(self, folder, metadata):
         """
-        Set metadata on a folder.  A rest exception is thrown in the cases
-        where the metadata json object is badly formed, or if any of the
+        Set metadata on a folder.  A `ValidationException` is thrown in the
+        cases where the metadata JSON object is badly formed, or if any of the
         metadata keys contains a period ('.').
 
         :param folder: The folder to set the metadata on.
@@ -176,11 +185,11 @@ class Folder(AccessControlledModel):
             folder['meta'] = {}
 
         # Add new metadata to existing metadata
-        folder['meta'].update(metadata.iteritems())
+        folder['meta'].update(six.viewitems(metadata))
 
         # Remove metadata fields that were set to null (use items in py3)
         folder['meta'] = {k: v
-                          for k, v in folder['meta'].iteritems()
+                          for k, v in six.viewitems(folder['meta'])
                           if v is not None}
 
         folder['updated'] = datetime.datetime.utcnow()
@@ -198,7 +207,7 @@ class Folder(AccessControlledModel):
         the folder.
         :type updateQuery: dict
         """
-        self.model('folder').update(query={
+        self.update(query={
             'parentId': folderId,
             'parentCollection': 'folder'
         }, update=updateQuery, multi=True)
@@ -283,9 +292,10 @@ class Folder(AccessControlledModel):
 
         return self.save(folder)
 
-    def remove(self, folder, progress=None, **kwargs):
+    def clean(self, folder, progress=None, **kwargs):
         """
-        Delete a folder recursively.
+        Delete all contents underneath a folder recursively, but leave the
+        folder itself.
 
         :param folder: The folder document to delete.
         :type folder: dict
@@ -301,7 +311,7 @@ class Folder(AccessControlledModel):
             setResponseTimeLimit()
             self.model('item').remove(item, progress=progress, **kwargs)
             if progress:
-                progress.update(increment=1, message='Deleted item ' +
+                progress.update(increment=1, message='Deleted item %s' %
                                 item['name'])
         # subsequent operations take a long time, so free the cursor's resources
         items.close()
@@ -315,6 +325,18 @@ class Folder(AccessControlledModel):
             self.remove(subfolder, progress=progress, **kwargs)
         folders.close()
 
+    def remove(self, folder, progress=None, **kwargs):
+        """
+        Delete a folder recursively.
+
+        :param folder: The folder document to delete.
+        :type folder: dict
+        :param progress: A progress context to record progress on.
+        :type progress: girder.utility.progress.ProgressContext or None.
+        """
+        # Remove the contents underneath this folder recursively.
+        self.clean(folder, progress, **kwargs)
+
         # Delete pending uploads into this folder
         uploads = self.model('upload').find({
             'parentId': folder['_id'],
@@ -327,7 +349,7 @@ class Folder(AccessControlledModel):
         # Delete this folder
         AccessControlledModel.remove(self, folder, progress=progress, **kwargs)
         if progress:
-            progress.update(increment=1, message='Deleted folder ' +
+            progress.update(increment=1, message='Deleted folder %s' %
                             folder['name'])
 
     def childItems(self, folder, limit=0, offset=0, sort=None, filters=None,
@@ -342,13 +364,10 @@ class Folder(AccessControlledModel):
         :param sort: The sort structure to pass to pymongo.
         :param filters: Additional query operators.
         """
-        if not filters:
-            filters = {}
-
         q = {
             'folderId': folder['_id']
         }
-        q.update(filters)
+        q.update(filters or {})
 
         return self.model('item').find(
             q, limit=limit, offset=offset, sort=sort, **kwargs)
@@ -394,7 +413,8 @@ class Folder(AccessControlledModel):
             offset=offset)
 
     def createFolder(self, parent, name, description='', parentType='folder',
-                     public=None, creator=None, allowRename=False):
+                     public=None, creator=None, allowRename=False,
+                     reuseExisting=False):
         """
         Create a new folder under the given parent.
 
@@ -414,10 +434,22 @@ class Folder(AccessControlledModel):
         :type creator: dict
         :param allowRename: if True and a folder or item of this name exists,
                             automatically rename the folder.
+        :type allowRename: bool
+        :param reuseExisting: If a folder with the given name already exists
+            under the given parent, return that folder rather than creating a
+            new one.
+        :type reuseExisting: bool
         :returns: The folder document that was created.
         """
-        assert '_id' in parent
-        assert public is None or type(public) is bool
+        if reuseExisting:
+            existing = self.findOne({
+                'parentId': parent['_id'],
+                'name': name,
+                'parentCollection': parentType
+            })
+
+            if existing:
+                return existing
 
         parentType = parentType.lower()
         if parentType not in ('folder', 'user', 'collection'):
@@ -454,16 +486,16 @@ class Folder(AccessControlledModel):
             'size': 0
         }
 
-        # If this is a subfolder, default permissions are inherited from the
-        # parent folder. Otherwise, the creator is granted admin access.
-        if parentType == 'folder':
-            self.copyAccessPolicies(src=parent, dest=folder)
-        elif creator is not None:
-            self.setUserAccess(folder, user=creator, level=AccessType.ADMIN)
+        if parentType in ('folder', 'collection'):
+            self.copyAccessPolicies(src=parent, dest=folder, save=False)
+
+        if creator is not None:
+            self.setUserAccess(folder, user=creator, level=AccessType.ADMIN,
+                               save=False)
 
         # Allow explicit public flag override if it's set.
-        if public is not None and type(public) is bool:
-            self.setPublic(folder, public=public)
+        if public is not None and isinstance(public, bool):
+            self.setPublic(folder, public, save=False)
 
         if allowRename:
             self.validate(folder, allowRename=True)
@@ -502,76 +534,147 @@ class Folder(AccessControlledModel):
         if curParentType == 'user' or curParentType == 'collection':
             curParentObject = self.model(curParentType).load(
                 curParentId, user=user, level=level, force=force)
-            parentFiltered = self.model(curParentType).filter(curParentObject,
-                                                              user)
+
+            if not force:
+                parentFiltered = \
+                    self.model(curParentType).filter(curParentObject, user)
+            else:
+                parentFiltered = curParentObject
+
             return [{'type': curParentType,
                      'object': parentFiltered}] + curPath
         else:
             curParentObject = self.load(
                 curParentId, user=user, level=level, force=force)
-            curPath = [{'type': curParentType,
-                        'object': self.filter(curParentObject, user)}] + curPath
+
+            if not force:
+                curPath = \
+                    [{'type': curParentType,
+                      'object': self.filter(curParentObject, user)}] + curPath
+            else:
+                curPath = [{'type': curParentType,
+                            'object': curParentObject}] + curPath
+
             return self.parentsToRoot(curParentObject, curPath, user=user,
                                       force=force)
 
-    def subtreeCount(self, folder):
+    def countItems(self, folder):
         """
-        Return the size of the subtree rooted at the given folder. Includes
-        the root folder in the count. Counts folders and items. This returns the
-        absolute size of the subtree, it does not filter by permissions.
+        Returns the number of items within the given folder.
+        """
+        return self.childItems(folder, fields=()).count()
 
-        :param folder: The root of the subtree.
+    def countFolders(self, folder, user=None, level=None):
+        """
+        Returns the number of subfolders within the given folder. Access
+        checking is optional; to circumvent access checks, pass ``level=None``.
+
+        :param folder: The parent folder.
         :type folder: dict
+        :param user: If performing access checks, the user to check against.
+        :type user: dict or None
+        :param level: The required access level, or None to return the raw
+            subfolder count.
         """
-        count = 1
-
-        items = self.model('item').find({
-            'folderId': folder['_id']
-        }, fields=())
-        count += items.count()
-        # subsequent operations take a long time, so free the cursor's resources
-        items.close()
+        fields = () if level is None else ('access', 'public')
 
         folders = self.find({
             'parentId': folder['_id'],
             'parentCollection': 'folder'
-        }, fields=())
-        count += sum(self.subtreeCount(subfolder) for subfolder in folders)
+        }, fields=fields)
+
+        if level is None:
+            return folders.count()
+        else:
+            return sum(1 for _ in self.filterResultsByPermission(
+                cursor=folders, user=user, level=level))
+
+    def subtreeCount(self, folder, includeItems=True, user=None, level=None):
+        """
+        Return the size of the subtree rooted at the given folder. Includes
+        the root folder in the count.
+
+        :param folder: The root of the subtree.
+        :type folder: dict
+        :param includeItems: Whether to include items in the subtree count, or
+            just folders.
+        :type includeItems: bool
+        :param user: If filtering by permission, the user to filter against.
+        :param level: If filtering by permission, the required permission level.
+        :type level: AccessLevel
+        """
+        count = 1
+
+        if includeItems:
+            count += self.countItems(folder)
+
+        folders = self.find({
+            'parentId': folder['_id'],
+            'parentCollection': 'folder'
+        }, fields=('access',))
+
+        if level is not None:
+            folders = self.filterResultsByPermission(
+                cursor=folders, user=user, level=level)
+
+        count += sum(self.subtreeCount(subfolder, includeItems=includeItems,
+                                       user=user, level=level)
+                     for subfolder in folders)
 
         return count
 
     def fileList(self, doc, user=None, path='', includeMetadata=False,
-                 subpath=True):
+                 subpath=True, mimeFilter=None, data=True):
         """
-        Generate a list of files within this folder.
+        This function generates a list of 2-tuples whose first element is the
+        relative path to the file from the folder's root and whose second
+        element depends on the value of the `data` flag. If `data=True`, the
+        second element will be a generator that will generate the bytes of the
+        file data as stored in the assetstore. If `data=False`, the second
+        element is the file document itself.
 
-        :param doc: the folder to list.
-        :param user: the user used for access.
-        :param path: a path prefix to add to the results.
+        :param doc: The folder to list.
+        :param user: The user used for access.
+        :param path: A path prefix to add to the results.
+        :type path: str
         :param includeMetadata: if True and there is any metadata, include a
-                                result which is the json string of the
+                                result which is the JSON string of the
                                 metadata.  This is given a name of
                                 metadata[-(number).json that is distinct from
                                 any file within the folder.
+        :type includeMetadata: bool
         :param subpath: if True, add the folder's name to the path.
+        :type subpath: bool
+        :param mimeFilter: Optional list of MIME types to filter by. Set to
+            None to include all files.
+        :type mimeFilter: list or tuple
+        :param data: If True return raw content of each file as stored in the
+            assetstore, otherwise return file document.
+        :type data: bool
+        :returns: Iterable over files in this folder, where each element is a
+                  tuple of (path name of the file, stream function with file
+                  data or file object).
+        :rtype: generator(str, func)
         """
         if subpath:
             path = os.path.join(path, doc['name'])
-        metadataFile = "girder-folder-metadata.json"
+        metadataFile = 'girder-folder-metadata.json'
         for sub in self.childFolders(parentType='folder', parent=doc,
                                      user=user):
             if sub['name'] == metadataFile:
                 metadataFile = None
             for (filepath, file) in self.fileList(
-                    sub, user, path, includeMetadata, subpath=True):
+                    sub, user, path, includeMetadata, subpath=True,
+                    mimeFilter=mimeFilter, data=data):
                 yield (filepath, file)
         for item in self.childItems(folder=doc):
             if item['name'] == metadataFile:
                 metadataFile = None
             for (filepath, file) in self.model('item').fileList(
-                    item, user, path, includeMetadata):
+                    item, user, path, includeMetadata, mimeFilter=mimeFilter,
+                    data=data):
                 yield (filepath, file)
-        if includeMetadata and metadataFile and len(doc.get('meta', {})):
+        if includeMetadata and metadataFile and doc.get('meta', {}):
             def stream():
                 yield json.dumps(doc['meta'], default=str)
             yield (os.path.join(path, metadataFile), stream)
@@ -629,9 +732,8 @@ class Folder(AccessControlledModel):
             allowRename=True)
         if firstFolder is None:
             firstFolder = newFolder
-        newFolder = self.copyFolderComponents(
+        return self.copyFolderComponents(
             srcFolder, newFolder, creator, progress, firstFolder)
-        return self.filter(newFolder, creator)
 
     def copyFolderComponents(self, srcFolder, newFolder, creator, progress,
                              firstFolder=None):
@@ -659,7 +761,7 @@ class Folder(AccessControlledModel):
                 newFolder[key] = copy.deepcopy(srcFolder[key])
                 updated = True
         if updated:
-            self.save(newFolder, triggerEvents=False)
+            newFolder = self.save(newFolder, triggerEvents=False)
         # Give listeners a chance to change things
         events.trigger('model.folder.copy.prepare', (srcFolder, newFolder))
         # copy items
@@ -680,4 +782,93 @@ class Folder(AccessControlledModel):
         if progress:
             progress.update(increment=1, message='Copied folder ' +
                             newFolder['name'])
-        return newFolder
+
+        # Reload to get updated size value
+        return self.load(newFolder['_id'], force=True)
+
+    def setAccessList(self, doc, access, save=False, recurse=False, user=None,
+                      progress=noProgress, setPublic=None):
+        """
+        Overrides AccessControlledModel.setAccessList to add a recursive
+        option. When `recurse=True`, this will set the access list on all
+        subfolders to which the given user has ADMIN access level. Any
+        subfolders that the given user does not have ADMIN access on will be
+        skipped.
+
+        :param doc: The folder to set access settings on.
+        :type doc: folder
+        :param access: The access control list.
+        :type access: dict
+        :param save: Whether the changes should be saved to the database.
+        :type save: bool
+        :param recurse: Whether this access list should be propagated to all
+            subfolders underneath this folder.
+        :type recurse: bool
+        :param user: The current user (for recursive mode filtering).
+        :param progress: Progress context to update.
+        :type progress: :py:class:`girder.utility.progress.ProgressContext`
+        :param setPublic: Pass this if you wish to set the public flag on the
+            resources being updated.
+        :type setPublic: bool or None
+        """
+        progress.update(increment=1, message='Updating ' + doc['name'])
+        if setPublic is not None:
+            self.setPublic(doc, setPublic, save=False)
+        doc = AccessControlledModel.setAccessList(self, doc, access, save=save)
+
+        if recurse:
+            cursor = self.find({
+                'parentId': doc['_id'],
+                'parentCollection': 'folder'
+            })
+
+            subfolders = self.filterResultsByPermission(
+                cursor=cursor, user=user, level=AccessType.ADMIN)
+
+            for folder in subfolders:
+                self.setAccessList(
+                    folder, access, save=True, recurse=True, user=user,
+                    progress=progress, setPublic=setPublic)
+
+        return doc
+
+    def isOrphan(self, folder, user=None):
+        """
+        Returns True if this folder is orphaned (its parent is missing).
+
+        :param folder: The folder to check.
+        :type folder: dict
+        :param user: (deprecated) Not used.
+        """
+        return not self.model(folder.get('parentCollection')).load(
+            folder.get('parentId'), force=True)
+
+    def updateSize(self, doc, user=None):
+        """
+        Recursively recomputes the size of this folder and its underlying
+        folders and fixes the sizes as needed.
+
+        :param doc: The folder.
+        :type doc: dict
+        :param user: (deprecated) Not used.
+        """
+        size = 0
+        fixes = 0
+        # recursively fix child folders but don't include their size
+        children = self.model('folder').find({
+            'parentId': doc['_id'],
+            'parentCollection': 'folder'
+        })
+        for child in children:
+            _, f = self.model('folder').updateSize(child)
+            fixes += f
+        # get correct size from child items
+        for item in self.childItems(doc):
+            s, f = self.model('item').updateSize(item)
+            size += s
+            fixes += f
+        # fix value if incorrect
+        if size != doc.get('size'):
+            self.update({'_id': doc['_id']}, update={'$set': {'size': size}})
+            fixes += 1
+        return size, fixes

@@ -41,12 +41,11 @@ function to be called when the task is finished. That callback function will
 receive the Event object as its only argument.
 """
 
-import Queue
+import contextlib
 import threading
-import types
 
-from .constants import TerminalColor
-from girder import logger
+import girder
+from six.moves import queue
 
 
 class Event(object):
@@ -60,6 +59,7 @@ class Event(object):
 
     # We might have a lot of events, so we use __slots__ to make them smaller
     __slots__ = (
+        'async',
         'info',
         'name',
         'propagate',
@@ -68,13 +68,14 @@ class Event(object):
         'currentHandlerName'
     )
 
-    def __init__(self, name, info):
+    def __init__(self, name, info, async=False):
         self.name = name
         self.info = info
         self.propagate = True
         self.defaultPrevented = False
         self.responses = []
         self.currentHandlerName = None
+        self.async = async
 
     def preventDefault(self):
         """
@@ -116,7 +117,7 @@ class AsyncEventsThread(threading.Thread):
         threading.Thread.__init__(self)
         self.daemon = True
         self.terminate = False
-        self.eventQueue = Queue.Queue()
+        self.eventQueue = queue.Queue()
 
     def run(self):
         """
@@ -124,19 +125,20 @@ class AsyncEventsThread(threading.Thread):
         put to sleep until someone calls trigger() on it with a new event to
         dispatch.
         """
-        print TerminalColor.info('Started asynchronous event manager thread.')
+        girder.logprint.info('Started asynchronous event manager thread.')
 
         while not self.terminate:
             eventName, info, callback = self.eventQueue.get(block=True)
             try:
-                event = trigger(eventName, info)
-                if isinstance(callback, types.FunctionType):
+                event = trigger(eventName, info, async=True)
+                if callable(callback):
                     callback(event)
             except Exception:
-                logger.exception('In handler for event "%s":' % eventName)
+                girder.logger.exception(
+                    'In handler for event "%s":' % eventName)
                 pass  # Must continue the event loop even if handler failed
 
-        print TerminalColor.info('Stopped asynchronous event manager thread.')
+        girder.logprint.info('Stopped asynchronous event manager thread.')
 
     def trigger(self, eventName, info=None, callback=None):
         """
@@ -173,11 +175,17 @@ def bind(eventName, handlerName, handler):
                     the Event.
     :type handler: function
     """
-    global _mapping
-    if eventName not in _mapping:
-        _mapping[eventName] = {}
+    if eventName in _deprecated:
+        girder.logger.warning('event "%s" is deprecated; %s' %
+                              (eventName, _deprecated[eventName]))
 
-    _mapping[eventName][handlerName] = handler
+    if eventName not in _mapping:
+        _mapping[eventName] = []
+
+    _mapping[eventName].append({
+        'name': handlerName,
+        'handler': handler
+    })
 
 
 def unbind(eventName, handlerName):
@@ -189,20 +197,41 @@ def unbind(eventName, handlerName):
     :param handlerName: The name that identifies the handler calling bind().
     :type handlerName: str
     """
-    global _mapping
-    if eventName in _mapping and handlerName in _mapping[eventName]:
-        del _mapping[eventName][handlerName]
+    if eventName not in _mapping:
+        return
+
+    for handler in _mapping[eventName]:
+        if handler['name'] == handlerName:
+            _mapping[eventName].remove(handler)
+            break
 
 
 def unbindAll():
     """
-    Clears the entire event map. Any bound listeners will be unbound.
+    Clears the entire event map. All bound listeners will be unbound.
+
+     .. warning:: This will also disable internal event listeners, which are
+       necessary for normal Girder functionality. This function should generally
+       never be called outside of testing.
     """
-    global _mapping
-    _mapping = {}
+    _mapping.clear()
 
 
-def trigger(eventName, info=None, pre=None):
+@contextlib.contextmanager
+def bound(eventName, handlerName, handler):
+    """
+    A context manager to temporarily bind an event handler within its scope.
+
+    Parameters are the same as those to :py:func:`girder.events.bind`.
+    """
+    bind(eventName, handlerName, handler)
+    try:
+        yield
+    finally:
+        unbind(eventName, handlerName)
+
+
+def trigger(eventName, info=None, pre=None, async=False):
     """
     Fire an event with the given name. All listeners bound on that name will be
     called until they are exhausted or one of the handlers calls the
@@ -216,21 +245,29 @@ def trigger(eventName, info=None, pre=None):
         executed. It will receive a dict with a "handler" key, (the function),
         "info" key (the info arg to this function), and "eventName" and
         "handlerName" values.
+    :type pre: function or None
+    :param async: Whether this event is executing on the background daemon
+        (True) or on the request thread (False).
+    :type async: bool
     """
-    global _mapping
-    e = Event(eventName, info)
-    for handlerName, handler in _mapping.get(eventName, {}).iteritems():
-        e.currentHandlerName = handlerName
+    e = Event(eventName, info, async=async)
+    for handler in _mapping.get(eventName, ()):
+        e.currentHandlerName = handler['name']
         if pre is not None:
-            pre(info=info, handler=handler, eventName=eventName,
-                handlerName=handlerName)
-        handler(e)
+            pre(info=info, handler=handler['handler'], eventName=eventName,
+                handlerName=handler['name'])
+        handler['handler'](e)
 
         if e.propagate is False:
             break
 
     return e
 
+
+_deprecated = {
+    'assetstore.adapter.get':
+        'use girder.utility.assetstore_utilities.setAssetstoreAdapter instead'
+}
 
 _mapping = {}
 daemon = AsyncEventsThread()

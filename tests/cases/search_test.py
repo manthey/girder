@@ -19,7 +19,10 @@
 
 from .. import base
 
+from girder.api.v1 import resource
 from girder.constants import AccessType
+from girder.models.model_base import AccessControlledModel
+from girder.utility.acl_mixin import AccessControlMixin
 
 
 def setUpModule():
@@ -154,6 +157,17 @@ class SearchTestCase(base.TestCase):
         })
 
         resp = self.request(path='/resource/search', params={
+            'q': 'pr',
+            'mode': 'prefix',
+            'types': '["folder", "user", "collection"]'
+        })
+        self.assertEqual(resp.json, {
+            'folder': [],
+            'user': [],
+            'collection': []
+        })
+
+        resp = self.request(path='/resource/search', params={
             'q': 'private',
             'types': '["folder", "user", "collection"]'
         }, user=user)
@@ -167,6 +181,20 @@ class SearchTestCase(base.TestCase):
             '_id': str(coll2['_id']),
             'name': coll2['name']
         }, resp.json['collection'][0])
+        self.assertEqual(0, len(resp.json['user']))
+
+        resp = self.request(path='/resource/search', params={
+            'q': 'pr',
+            'mode': 'prefix',
+            'types': '["folder", "user", "collection", "item"]'
+        }, user=user)
+        self.assertEqual(1, len(resp.json['folder']))
+        self.assertDictContainsSubset({
+            '_id': str(privateFolder['_id']),
+            'name': 'Private'
+        }, resp.json['folder'][0])
+        self.assertEqual(0, len(resp.json['collection']))
+        self.assertEqual(0, len(resp.json['item']))
         self.assertEqual(0, len(resp.json['user']))
 
         # Ensure that weights are respected, e.g. description should be
@@ -210,3 +238,16 @@ class SearchTestCase(base.TestCase):
             '_id': str(item1['_id']),
             'name': item1['name']
         }, resp.json['item'][0])
+
+        # Check search for model that is not access controlled
+        self.assertNotIsInstance(
+            self.model('assetstore'), AccessControlledModel)
+        self.assertNotIsInstance(
+            self.model('assetstore'), AccessControlMixin)
+        resource.allowedSearchTypes.add('assetstore')
+        resp = self.request(path='/resource/search', params={
+            'q': 'Test',
+            'mode': 'prefix',
+            'types': '["assetstore"]'
+        }, user=user)
+        self.assertEqual(1, len(resp.json['assetstore']))

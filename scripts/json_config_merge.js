@@ -1,18 +1,19 @@
 
 //
-// This script allows to conveniently merge multiple json config files.
+// This script allows to conveniently merge multiple JSON config files.
 //
 
 // Describe script parameters and parse arguments
 
 var path = require('path');
+var _ = require('underscore');
 
 var scriptname = path.basename(process.argv[1]);
 
 var argv = require('argv');
 
 argv.info(
-  'This script allows to merge multiple json config files.\n' +
+  'This script allows to merge multiple JSON config files.\n' +
   '\nUsage:\n' +
   '\n  ' + scriptname + ' [-v] -o /path/to/output.js ' +
   ' -i /path/to/config1.js -i /path/to/config2.js [-i /path/to/config3.js [...]]\n' +
@@ -104,7 +105,7 @@ function array_merge_recursive(arr1, arr2) {
         for (idx in arr2) {
             if (arr2.hasOwnProperty(idx)) {
                 if (idx in arr1) {
-                    if (typeof arr1[idx] === 'object' && typeof arr2 === 'object') {
+                    if (_.isObject(arr1[idx]) && _.isObject(arr2)) {
                         arr1[idx] = array_merge_recursive(arr1[idx], arr2[idx]);
                     } else {
                         arr1[idx] = arr2[idx];

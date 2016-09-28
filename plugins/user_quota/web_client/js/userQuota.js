@@ -3,6 +3,7 @@
 (function () {
     _.each({user: 'User', collection: 'Collection'}, function (
             modelName, modelType) {
+        var fullModelName;
         var viewName = modelName + 'View';
         girder.views[viewName] = girder.views[viewName].extend({
             events: function () {
@@ -18,11 +19,12 @@
                                                                   arguments);
             },
             render: function () {
+                var el, settings;
                 /* Add the quota menu item to the resource menu as needed */
                 girder.views[viewName].__super__.render.call(this);
-                var el = $('.g-' + modelType + '-header a.g-delete-' +
-                           modelType).closest('li');
-                var settings = {girder: girder};
+                el = $('.g-' + modelType + '-header a.g-delete-' +
+                       modelType).closest('li');
+                settings = {girder: girder};
                 settings[modelType] = this.model;
                 el.before(girder.templates[modelType + 'PoliciesMenu'](
                     settings));
@@ -37,12 +39,12 @@
                     model: this.model,
                     modelType: modelType,
                     parentView: this
-                }).on('g:saved', function (resource) {
+                }).on('g:saved', function () {
                     this.render();
                 }, this);
             }
         });
-        var fullModelName = modelName + 'Model';
+        fullModelName = modelName + 'Model';
         girder.models[fullModelName] = girder.models[fullModelName].extend({
             /* Saves the quota policy on this model to the server.  Saves the
              * state of whatever this model's "quotaPolicy" parameter is set
@@ -157,16 +159,15 @@
 girder.views.QuotaPolicies = girder.View.extend({
     events: {
         'submit #g-policies-edit-form': function (e) {
+            var fields;
             e.preventDefault();
-            var fields = {
+            fields = {
                 fileSizeQuota: this.$('#g-fileSizeQuota').val(),
                 useQuotaDefault: $('input:radio[name=defaultQuota]:checked')
                     .val() === 'True',
                 preferredAssetstore: this.$('#g-preferredAssetstore').val(),
                 fallbackAssetstore: this.$('#g-fallbackAssetstore').val()
             };
-            var sizeValue = this.$('#g-sizeValue').val();
-            var sizeUnits = this.$('#g-sizeUnits').val();
             fields.fileSizeQuota = girder.userQuota.valueAndUnitsToSize(
                 this.$('#g-sizeValue').val(), this.$('#g-sizeUnits').val());
             this.updateQuotaPolicies(fields);
@@ -175,10 +176,6 @@ girder.views.QuotaPolicies = girder.View.extend({
         },
         'input #g-sizeValue': '_selectCustomQuota',
         'change #g-sizeUnits': '_selectCustomQuota'
-    },
-
-    _selectCustomQuota: function (e) {
-        $('#g-customQuota').prop('checked', true);
     },
 
     initialize: function (settings) {
@@ -190,23 +187,31 @@ girder.views.QuotaPolicies = girder.View.extend({
             }, this).fetchQuotaPolicy();
     },
 
+    _selectCustomQuota: function () {
+        $('#g-customQuota').prop('checked', true);
+    },
+
     capacityChart: function (view, el) {
+        var used, free, data;
         var quota = view.model.get('quotaPolicy').fileSizeQuota;
         if (view.model.get('quotaPolicy').useQuotaDefault !== false) {
             quota = view.model.get('defaultQuota');
+            if (!quota) {
+                quota = this.model.get('quotaPolicy')._currentFileSizeQuota;
+            }
         }
         if (!quota) {
             $(el).addClass('g-no-chart');
             return;
         }
         $(el).addClass('g-has-chart');
-        var used = view.model.get('size');
-        var free = used < quota ? quota - used : 0;
-        var data = [
+        used = view.model.get('size');
+        free = Math.max(quota - used, 0);
+        data = [
             ['Used (' + girder.formatSize(used) + ')', used],
             ['Free (' + girder.formatSize(free) + ')', free]
         ];
-        var plot = $(el).jqplot([data], {
+        $(el).jqplot([data], {
             seriesDefaults: {
                 renderer: $.jqplot.PieRenderer,
                 rendererOptions: {
@@ -235,15 +240,19 @@ girder.views.QuotaPolicies = girder.View.extend({
     },
 
     capacityString: function () {
+        var used, free;
         var quota = this.model.get('quotaPolicy').fileSizeQuota;
         if (this.model.get('quotaPolicy').useQuotaDefault !== false) {
             quota = this.model.get('defaultQuota');
+            if (!quota) {
+                quota = this.model.get('quotaPolicy')._currentFileSizeQuota;
+            }
         }
         if (!quota) {
             return 'Unlimited';
         }
-        var used = this.model.get('size');
-        var free = quota - used;
+        used = this.model.get('size');
+        free = quota - used;
         if (free > 0) {
             return girder.formatSize(free) + ' free of ' +
                 girder.formatSize(quota);
@@ -253,20 +262,21 @@ girder.views.QuotaPolicies = girder.View.extend({
 
     render: function () {
         var view = this;
+        var sizeInfo, defaultQuota, defaultQuotaString, modal;
         var name = view.model.attributes.name;
         if (view.modelType === 'user') {
             name = view.model.attributes.firstName + ' ' +
                    view.model.attributes.lastName;
         }
-        var sizeInfo = girder.userQuota.sizeToValueAndUnits(
+        sizeInfo = girder.userQuota.sizeToValueAndUnits(
             view.model.get('quotaPolicy').fileSizeQuota);
-        var defaultQuota = this.model.get('defaultQuota'), defaultQuotaString;
+        defaultQuota = this.model.get('defaultQuota');
         if (!defaultQuota) {
             defaultQuotaString = 'Unlimited';
         } else {
             defaultQuotaString = girder.formatSize(defaultQuota);
         }
-        var modal = this.$el.html(girder.templates.quotaPolicies({
+        modal = this.$el.html(girder.templates.quotaPolicies({
             girder: girder,
             model: view.model,
             modelType: view.modelType,
@@ -274,8 +284,8 @@ girder.views.QuotaPolicies = girder.View.extend({
             quotaPolicy: view.model.get('quotaPolicy'),
             sizeValue: sizeInfo.sizeValue,
             sizeUnits: sizeInfo.sizeUnits,
-            assetstoreList: (girder.currentUser.get('admin') ?
-                view.model.get('assetstoreList').models : undefined),
+            assetstoreList: (girder.currentUser.get('admin')
+                ? view.model.get('assetstoreList').models : undefined),
             capacityString: ' ' + this.capacityString(),
             defaultQuotaString: defaultQuotaString
         })).girderModal(this).on('shown.bs.modal', function () {
@@ -316,7 +326,7 @@ girder.userQuota = {
     sizeToValueAndUnits: function (sizeValue) {
         var sizeUnits = 0;
         if (sizeValue) {
-            for (sizeUnits = 0; sizeUnits < 4 && parseInt(sizeValue / 1024) *
+            for (sizeUnits = 0; sizeUnits < 4 && parseInt(sizeValue / 1024, 10) *
                     1024 === sizeValue; sizeUnits += 1) {
                 sizeValue /= 1024;
             }
@@ -336,11 +346,11 @@ girder.userQuota = {
      *                    for none. */
     valueAndUnitsToSize: function (sizeValue, sizeUnits) {
         var sizeBytes = sizeValue;
+        var match, i, suffixes = 'bkMGT';
         if (parseFloat(sizeValue) > 0) {
             sizeBytes = parseFloat(sizeValue);
             /* parse suffix */
-            var suffixes = 'bkMGT';
-            var match = sizeValue.match(
+            match = sizeValue.match(
                 new RegExp('^\\s*[0-9.]+\\s*([' + suffixes + '])', 'i'));
             if (match && match.length > 1) {
                 for (sizeUnits = 0; sizeUnits < suffixes.length;
@@ -351,10 +361,10 @@ girder.userQuota = {
                     }
                 }
             }
-            for (var i = 0; i < parseInt(sizeUnits); i += 1) {
+            for (i = 0; i < parseInt(sizeUnits, 10); i += 1) {
                 sizeBytes *= 1024;
             }
-            sizeBytes = parseInt(sizeBytes);
+            sizeBytes = parseInt(sizeBytes, 10);
         }
         return sizeBytes;
     }

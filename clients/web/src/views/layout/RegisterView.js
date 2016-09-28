@@ -23,11 +23,35 @@ girder.views.RegisterView = girder.View.extend({
                 lastName: this.$('#g-lastName').val()
             });
             user.on('g:saved', function () {
-                this.$el.modal('hide');
+                if (girder.currentUser) {
+                    this.trigger('g:userCreated', {
+                        user: user
+                    });
+                } else {
+                    var authToken = user.get('authToken') || {};
 
-                girder.currentUser = user;
-                girder.dialogs.handleClose('register', {replace: true});
-                girder.events.trigger('g:login');
+                    if (authToken.token) {
+                        girder.currentUser = user;
+                        girder.currentToken = authToken.token;
+
+                        if (girder.corsAuth) {
+                            document.cookie = 'girderToken=' + girder.currentToken;
+                        }
+
+                        girder.events.trigger('g:login');
+                    } else {
+                        girder.events.trigger('g:alert', {
+                            icon: 'ok',
+                            text: 'Check your email to verify registration.',
+                            type: 'success',
+                            timeout: 4000
+                        });
+                    }
+
+                    girder.dialogs.handleClose('register', {replace: true});
+                }
+
+                this.$el.modal('hide');
             }, this).on('g:error', function (err) {
                 var resp = err.responseJSON;
                 this.$('.g-validation-failed-message').text(resp.message);
@@ -49,7 +73,10 @@ girder.views.RegisterView = girder.View.extend({
 
     render: function () {
         var view = this;
-        this.$el.html(girder.templates.registerDialog()).girderModal(this)
+        this.$el.html(girder.templates.registerDialog({
+            currentUser: girder.currentUser,
+            title: girder.currentUser ? 'Create new user' : 'Sign up'
+        })).girderModal(this)
             .on('shown.bs.modal', function () {
                 view.$('#g-login').focus();
             }).on('hidden.bs.modal', function () {

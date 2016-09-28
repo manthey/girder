@@ -20,18 +20,22 @@
 import cherrypy.process.plugins
 import datetime
 import errno
+import girder
 import json
+import six
+import os
 
 from girder.api import access
-from girder.constants import SettingKey, VERSION
+from girder.constants import SettingKey, TokenScope, VERSION
 from girder.models.model_base import GirderException
 from girder.utility import plugin_utilities
 from girder.utility import system
 from girder.utility.progress import ProgressContext
-from ..describe import API_VERSION, Description
+from ..describe import API_VERSION, Description, describeRoute
 from ..rest import Resource, RestException
 
 ModuleStartTime = datetime.datetime.utcnow()
+LOG_BUF_SIZE = 65536
 
 
 class System(Resource):
@@ -39,6 +43,7 @@ class System(Resource):
     The system endpoints are for querying and managing system-wide properties.
     """
     def __init__(self):
+        super(System, self).__init__()
         self.resourceName = 'system'
         self.route('DELETE', ('setting',), self.unsetSetting)
         self.route('GET', ('version',), self.getVersion)
@@ -51,8 +56,21 @@ class System(Resource):
         self.route('DELETE', ('uploads',), self.discardPartialUploads)
         self.route('GET', ('check',), self.systemStatus)
         self.route('PUT', ('check',), self.systemConsistencyCheck)
+        self.route('GET', ('log',), self.getLog)
 
     @access.admin
+    @describeRoute(
+        Description('Set the value for a system setting, or a list of them.')
+        .notes("""Must be a system administrator to call this. If the value
+               passed is a valid JSON object, it will be parsed and stored
+               as an object.""")
+        .param('key', 'The key identifying this setting.', required=False)
+        .param('value', 'The value for this setting.', required=False)
+        .param('list', 'A JSON list of objects with key and value representing '
+               'a list of settings to set.', required=False)
+        .errorResponse('You are not a system administrator.', 403)
+        .errorResponse('Failed to set system setting.', 500)
+    )
     def setSetting(self, params):
         """
         Set a system-wide setting. Validation of the setting is performed in
@@ -64,7 +82,7 @@ class System(Resource):
             try:
                 settings = json.loads(params['list'])
 
-                if type(settings) is not list:
+                if not isinstance(settings, list):
                     raise ValueError()
             except ValueError:
                 raise RestException('List was not a valid JSON list.')
@@ -77,7 +95,7 @@ class System(Resource):
                 value = None
             else:
                 try:
-                    if isinstance(setting['value'], basestring):
+                    if isinstance(setting['value'], six.string_types):
                         value = json.loads(setting['value'])
                     else:
                         value = setting['value']
@@ -90,18 +108,19 @@ class System(Resource):
                 self.model('setting').set(key=setting['key'], value=value)
 
         return True
-    setSetting.description = (
-        Description('Set the value for a system setting, or a list of them.')
-        .notes("""Must be a system administrator to call this. If the value
-               passed is a valid JSON object, it will be parsed and stored
-               as an object.""")
-        .param('key', 'The key identifying this setting.', required=False)
-        .param('value', 'The value for this setting.', required=False)
-        .param('list', 'A JSON list of objects with key and value representing '
-               'a list of settings to set.', required=False)
-        .errorResponse('You are not a system administrator.', 403))
 
-    @access.admin
+    @access.admin(scope=TokenScope.SETTINGS_READ)
+    @describeRoute(
+        Description('Get the value of a system setting, or a list of them.')
+        .notes('Must be a system administrator to call this.')
+        .param('key', 'The key identifying this setting.', required=False)
+        .param('list', 'A JSON list of keys representing a set of settings to'
+               ' return.', required=False)
+        .param('default', 'If "none", return a null value if a setting is '
+               'currently the default value.  If "default", return the '
+               'default value of the setting(s).', required=False)
+        .errorResponse('You are not a system administrator.', 403)
+    )
     def getSetting(self, params):
         getFuncName = 'get'
         funcParams = {}
@@ -118,7 +137,7 @@ class System(Resource):
             try:
                 keys = json.loads(params['list'])
 
-                if type(keys) is not list:
+                if not isinstance(keys, list):
                     raise ValueError()
             except ValueError:
                 raise RestException('List was not a valid JSON list.')
@@ -127,42 +146,38 @@ class System(Resource):
         else:
             self.requireParams('key', params)
             return getFunc(params['key'], **funcParams)
-    getSetting.description = (
-        Description('Get the value of a system setting, or a list of them.')
-        .notes('Must be a system administrator to call this.')
-        .param('key', 'The key identifying this setting.', required=False)
-        .param('list', 'A JSON list of keys representing a set of settings to'
-               ' return.', required=False)
-        .param('default', 'If "none", return a null value if a setting is '
-               'currently the default value.  If "default", return the '
-               'default value of the setting(s).', required=False)
-        .errorResponse('You are not a system administrator.', 403))
 
-    @access.admin
+    @access.admin(scope=TokenScope.PLUGINS_ENABLED_READ)
+    @describeRoute(
+        Description('Get the lists of all available and all enabled plugins.')
+        .notes('Must be a system administrator to call this.')
+        .errorResponse('You are not a system administrator.', 403)
+    )
     def getPlugins(self, params):
-        """
-        Return the plugin information for the system. This includes a list of
-        all of the currently enabled plugins, as well as
-        """
         return {
             'all': plugin_utilities.findAllPlugins(),
             'enabled': self.model('setting').get(SettingKey.PLUGINS_ENABLED)
         }
-    getPlugins.description = (
-        Description('Get the lists of all available and all enabled plugins.')
-        .notes('Must be a system administrator to call this.')
-        .errorResponse('You are not a system administrator.', 403))
 
     @access.public
+    @describeRoute(
+        Description('Get the version information for this server.')
+    )
     def getVersion(self, params):
         version = dict(**VERSION)
         version['apiVersion'] = API_VERSION
         version['serverStartDate'] = ModuleStartTime
         return version
-    getVersion.description = Description(
-        'Get the version information for this server.')
 
     @access.admin
+    @describeRoute(
+        Description('Set the list of enabled plugins for the system.')
+        .responseClass('Setting')
+        .notes('Must be a system administrator to call this.')
+        .param('plugins', 'JSON array of plugins to enable.')
+        .errorResponse('Required dependencies do not exist.', 500)
+        .errorResponse('You are not a system administrator.', 403)
+    )
     def enablePlugins(self, params):
         self.requireParams('plugins', params)
         try:
@@ -171,42 +186,23 @@ class System(Resource):
             raise RestException('Plugins parameter should be a JSON list.')
 
         return self.model('setting').set(SettingKey.PLUGINS_ENABLED, plugins)
-    enablePlugins.description = (
-        Description('Set the list of enabled plugins for the system.')
-        .responseClass('Setting')
-        .notes('Must be a system administrator to call this.')
-        .param('plugins', 'JSON array of plugins to enable.')
-        .errorResponse('You are not a system administrator.', 403))
 
     @access.admin
-    def unsetSetting(self, params):
-        self.requireParams('key', params)
-        return self.model('setting').unset(params['key'])
-    unsetSetting.description = (
+    @describeRoute(
         Description('Unset the value for a system setting.')
         .notes("""Must be a system administrator to call this. This is used to
                explicitly restore a setting to its default value.""")
         .param('key', 'The key identifying the setting to unset.')
-        .errorResponse('You are not a system administrator.', 403))
+        .errorResponse('You are not a system administrator.', 403)
+    )
+    def unsetSetting(self, params):
+        self.requireParams('key', params)
+        return self.model('setting').unset(params['key'])
 
-    @access.admin
-    def getPartialUploads(self, params):
-        limit, offset, sort = self.getPagingParameters(params, 'updated')
-        uploadList = list(self.model('upload').list(
-            filters=params, limit=limit, offset=offset, sort=sort))
-        untracked = self.boolParam('includeUntracked', params, default=True)
-        if untracked and (limit == 0 or len(uploadList) < limit):
-            assetstoreId = params.get('assetstoreId', None)
-            untrackedList = self.model('upload').untrackedUploads('list',
-                                                                  assetstoreId)
-            if limit == 0:
-                uploadList += untrackedList
-            elif len(uploadList) < limit:
-                uploadList += untrackedList[:limit-len(uploadList)]
-        return uploadList
-    getPartialUploads.description = (
+    @access.admin(scope=TokenScope.PARTIAL_UPLOAD_READ)
+    @describeRoute(
         Description('Get a list of uploads that have not been finished.')
-        .notes("Must be a system administrator to call this.")
+        .notes('Must be a system administrator to call this.')
         .param('uploadId', 'List only a specific upload.', required=False)
         .param('userId', 'Restrict listing uploads to those started by a '
                'specific user.', required=False)
@@ -229,29 +225,25 @@ class System(Resource):
                required=False)
         .param('sortdir', "1 for ascending, -1 for descending (default=1)",
                required=False, dataType='int')
-        .errorResponse('You are not a system administrator.', 403))
-
-    @access.admin
-    def discardPartialUploads(self, params):
-        uploadList = list(self.model('upload').list(filters=params))
-        # Move the results to list that isn't a cursor so we don't have to have
-        # the cursor sitting around while we work on the data.
-        for upload in uploadList:
-            try:
-                self.model('upload').cancelUpload(upload)
-            except OSError as exc:
-                if exc[0] in (errno.EACCES,):
-                    raise GirderException(
-                        'Failed to delete upload.',
-                        'girder.api.v1.system.delete-upload-failed')
-                raise
+        .errorResponse('You are not a system administrator.', 403)
+    )
+    def getPartialUploads(self, params):
+        limit, offset, sort = self.getPagingParameters(params, 'updated')
+        uploadList = list(self.model('upload').list(
+            filters=params, limit=limit, offset=offset, sort=sort))
         untracked = self.boolParam('includeUntracked', params, default=True)
-        if untracked:
+        if untracked and (limit == 0 or len(uploadList) < limit):
             assetstoreId = params.get('assetstoreId', None)
-            uploadList += self.model('upload').untrackedUploads('delete',
-                                                                assetstoreId)
+            untrackedList = self.model('upload').untrackedUploads('list',
+                                                                  assetstoreId)
+            if limit == 0:
+                uploadList += untrackedList
+            elif len(uploadList) < limit:
+                uploadList += untrackedList[:limit-len(uploadList)]
         return uploadList
-    discardPartialUploads.description = (
+
+    @access.admin(scope=TokenScope.PARTIAL_UPLOAD_CLEAN)
+    @describeRoute(
         Description('Discard uploads that have not been finished.')
         .notes("""Must be a system administrator to call this. This frees
                resources that were allocated for the uploads and clears the
@@ -271,12 +263,37 @@ class System(Resource):
                'True.',
                required=False, dataType='boolean')
         .errorResponse('You are not a system administrator.', 403)
-        .errorResponse('Failed to delete upload', 500))
+        .errorResponse('Failed to delete upload', 500)
+    )
+    def discardPartialUploads(self, params):
+        uploadList = list(self.model('upload').list(filters=params))
+        # Move the results to list that isn't a cursor so we don't have to have
+        # the cursor sitting around while we work on the data.
+        for upload in uploadList:
+            try:
+                self.model('upload').cancelUpload(upload)
+            except OSError as exc:
+                if exc.errno == errno.EACCES:
+                    raise GirderException(
+                        'Failed to delete upload.',
+                        'girder.api.v1.system.delete-upload-failed')
+                raise
+        untracked = self.boolParam('includeUntracked', params, default=True)
+        if untracked:
+            assetstoreId = params.get('assetstoreId', None)
+            uploadList += self.model('upload').untrackedUploads('delete',
+                                                                assetstoreId)
+        return uploadList
 
     @access.admin
+    @describeRoute(
+        Description('Restart the Girder REST server.')
+        .notes('Must be a system administrator to call this.')
+        .errorResponse('You are not a system administrator.', 403)
+    )
     def restartServer(self, params):
         """
-        Restart the girder rest server.  This reloads everything, which is
+        Restart the Girder REST server.  This reloads everything, which is
         currently necessary to enable or disable a plugin.
         """
         class Restart(cherrypy.process.plugins.Monitor):
@@ -298,12 +315,18 @@ class System(Resource):
         return {
             'restarted': datetime.datetime.utcnow()
         }
-    restartServer.description = (
-        Description('Restart the Girder REST server.')
-        .notes('Must be a system administrator to call this.')
-        .errorResponse('You are not a system administrator.', 403))
 
     @access.public
+    @describeRoute(
+        Description('Report the current system status.')
+        .notes('Must be a system administrator to call this with any mode '
+               'other than basic.')
+        .param('mode', 'Select details to return.  "quick" are the details '
+               'that can be answered without much load on the system.  "slow" '
+               'also includes some resource-intensive queries.',
+               required=False, enum=['basic', 'quick', 'slow'])
+        .errorResponse('You are not a system administrator.', 403)
+    )
     def systemStatus(self, params):
         mode = params.get('mode', 'basic')
         user = self.getCurrentUser()
@@ -312,63 +335,124 @@ class System(Resource):
         status = system.getStatus(mode, user)
         status["requestBase"] = cherrypy.request.base.rstrip('/')
         return status
-    systemStatus.description = (
-        Description('Report the current system status.')
-        .notes('Must be a system administrator to call this with any mode '
-               'other than basic.')
-        .param('mode', 'Select details to return.  "quick" are the details '
-               'that can be answered without much load on the system.  "slow" '
-               'also includes some resource-intensive queries.',
-               required=False, enum=['basic', 'quick', 'slow'])
-        .errorResponse('You are not a system administrator.', 403))
 
     @access.admin
-    def systemConsistencyCheck(self, params):
-        results = {}
-        progress = self.boolParam('progress', params, default=False)
-        models = ('item', )
-        steps = 0
-        if progress:
-            for model in models:
-                count, changed = self.model(model).checkConsistency(
-                    stage='count')
-                steps += count
-        with ProgressContext(progress, user=self.getCurrentUser(),
-                             title='Checking system', total=steps,
-                             message='Checking system...') as ctx:
-            for model in models:
-                count, removed = self.model(model).checkConsistency(
-                    stage='remove', progress=ctx)
-                if removed:
-                    results[model+'Removed'] = removed
-            revmodels = list(models)
-            revmodels.reverse()
-            for model in revmodels:
-                count, corrected = self.model(model).checkConsistency(
-                    stage='verify', progress=ctx)
-                if count:
-                    results[model+'Count'] = count
-                if corrected:
-                    results[model+'Corrected'] = corrected
-            # TODO:
-            # * check that all files are associated with an existing item
-            # * check that all files exist within their assetstore and are the
-            #   expected size
-            # * check that all folders have a valid ancestor tree leading to a
-            #   user or collection
-            # * check that all folders have the correct baseParentId and
-            #   baseParentType
-            # * check that all groups contain valid users
-            # * check that all resources validate
-            # * for filesystem assetstores, find files that are not tracked.
-            # * for gridfs assetstores, find chunks that are not tracked.
-            # * for s3 assetstores, find elements that are not tracked.
-        return results
-    systemConsistencyCheck.description = (
+    @describeRoute(
         Description('Perform a variety of system checks to verify that all is '
                     'well.')
         .notes("""Must be a system administrator to call this.  This verifies
                and corrects some issues, such as incorrect folder sizes.""")
         .param('progress', 'Whether to record progress on this task. Default '
                'is false.', required=False, dataType='boolean')
-        .errorResponse('You are not a system administrator.', 403))
+        .errorResponse('You are not a system administrator.', 403)
+    )
+    def systemConsistencyCheck(self, params):
+        progress = self.boolParam('progress', params, default=False)
+        user = self.getCurrentUser()
+        title = 'Running system consistency check'
+        with ProgressContext(progress, user=user, title=title) as pc:
+            results = {}
+            pc.update(
+                title='Checking for orphaned records (Step 1 of 3)')
+            results['orphansRemoved'] = self._pruneOrphans(pc)
+            pc.update(
+                title='Checking for incorrect base parents (Step 2 of 3)')
+            results['baseParentsFixed'] = self._fixBaseParents(pc)
+            pc.update(
+                title='Checking for incorrect sizes (Step 3 of 3)')
+            results['sizesChanged'] = self._recalculateSizes(pc)
+            return results
+        # TODO:
+        # * check that all files are associated with an existing item
+        # * check that all files exist within their assetstore and are the
+        #   expected size
+        # * check that all folders have a valid ancestor tree leading to a
+        #   user or collection
+        # * check that all folders have the correct baseParentId and
+        #   baseParentType
+        # * check that all groups contain valid users
+        # * check that all resources validate
+        # * for filesystem assetstores, find files that are not tracked.
+        # * for gridfs assetstores, find chunks that are not tracked.
+        # * for s3 assetstores, find elements that are not tracked.
+
+    @access.admin
+    @describeRoute(
+        Description('Show the most recent contents of the server logs.')
+        .notes('Must be a system administrator to call this.')
+        .param('bytes', 'Controls how many bytes (from the end of the log) '
+               'to show. Pass 0 to show the whole log.', dataType='integer',
+               default=4096)
+        .param('log', 'Which log to tail.', enum=['error', 'info'],
+               default='error')
+        .errorResponse('You are not a system administrator.', 403)
+    )
+    def getLog(self, params):
+        self.requireParams(['log', 'bytes'], params)
+        if params['log'] not in ('error', 'info'):
+            raise RestException('Log should be "error" or "info".')
+
+        path = girder.getLogPaths()[params['log']]
+        filesize = os.path.getsize(path)
+        length = int(params['bytes']) or filesize
+
+        def stream():
+            yield '=== Last %d bytes of %s: ===\n\n' % (
+                min(length, filesize), path
+            )
+
+            with open(path, 'rb') as f:
+                if length < filesize:
+                    f.seek(-length, os.SEEK_END)
+                while True:
+                    data = f.read(LOG_BUF_SIZE)
+                    if not data:
+                        break
+                    yield data
+        return stream
+
+    def _fixBaseParents(self, progress):
+        fixes = 0
+        models = ['folder', 'item']
+        steps = sum(self.model(model).find().count() for model in models)
+        progress.update(total=steps, current=0)
+        for model in models:
+            for doc in self.model(model).find():
+                progress.update(increment=1)
+                baseParent = self.model(model).parentsToRoot(doc, force=True)[0]
+                baseParentType = baseParent['type']
+                baseParentId = baseParent['object']['_id']
+                if (doc['baseParentType'] != baseParentType or
+                        doc['baseParentId'] != baseParentId):
+                    self.model(model).update({'_id': doc['_id']}, update={
+                        '$set': {
+                            'baseParentType': baseParentType,
+                            'baseParentId': baseParentId
+                        }})
+                    fixes += 1
+        return fixes
+
+    def _pruneOrphans(self, progress):
+        count = 0
+        models = ['folder', 'item', 'file']
+        steps = sum(self.model(model).find().count() for model in models)
+        progress.update(total=steps, current=0)
+        for model in models:
+            for doc in self.model(model).find():
+                progress.update(increment=1)
+                if self.model(model).isOrphan(doc):
+                    self.model(model).remove(doc)
+                    count += 1
+        return count
+
+    def _recalculateSizes(self, progress):
+        fixes = 0
+        models = ['collection', 'user']
+        steps = sum(self.model(model).find().count() for model in models)
+        progress.update(total=steps, current=0)
+        for model in models:
+            for doc in self.model(model).find():
+                progress.update(increment=1)
+                _, f = self.model(model).updateSize(doc)
+                fixes += f
+        return fixes

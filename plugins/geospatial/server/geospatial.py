@@ -18,16 +18,15 @@
 ###############################################################################
 
 
-import json
-
 import bson.json_util
-import cherrypy
+import six
+
 from geojson import GeoJSON
 from pymongo import GEOSPHERE
 from pymongo.errors import OperationFailure
 
 from girder.api import access
-from girder.api.describe import Description
+from girder.api.describe import Description, describeRoute
 from girder.api.rest import loadmodel, Resource, RestException
 from girder.constants import AccessType
 
@@ -41,6 +40,25 @@ class GeospatialItem(Resource):
     """
 
     @access.user
+    @describeRoute(
+        Description('Create new items from a GeoJSON feature or feature'
+                    ' collection.')
+        .param('folderId', 'The ID of the parent folder.', required=True,
+               paramType='query')
+        .param('geoJSON', 'A GeoJSON object containing the features or feature'
+                          ' collection to add.', required=True,
+               paramType='query')
+        .errorResponse()
+        .errorResponse('Invalid GeoJSON was passed in request body.')
+        .errorResponse('GeoJSON feature or feature collection was not passed in'
+                       ' request body.')
+        .errorResponse("GeoJSON feature did not contain a property named"
+                       " 'name'.")
+        .errorResponse('Property name was invalid.')
+        .errorResponse('Write access was denied on the parent folder.', 403)
+        .notes("All GeoJSON features must contain a property named 'name' from"
+               " which the name of each created item is taken.")
+    )
     def create(self, params):
         """
         Create new items from a GeoJSON feature or feature collection. All
@@ -50,7 +68,7 @@ class GeospatialItem(Resource):
         :param params: parameters to the API call, including 'folderId' and
                        'geoJSON'.
         :type params: dict[str, unknown]
-        :return: filtered fields of the created items with properties appended
+        :returns: filtered fields of the created items with properties appended
                  to the 'meta' field and geospatial data appended to the 'geo'
                  field of each item.
         :rtype: list[dict[str, unknown]]
@@ -92,9 +110,9 @@ class GeospatialItem(Resource):
                     raise RestException('Property names must be at least one'
                                         ' character long.')
                 if '.' in key or key[0] == '$':
-                    raise RestException('The property name {} must not contain'
-                                        ' a period or begin with a dollar sign.'
-                                        .format(key))
+                    raise RestException('The property name %s must not contain'
+                                        ' a period or begin with a dollar'
+                                        ' sign.' % key)
 
             data.append({'name': name,
                          'description': description,
@@ -118,33 +136,23 @@ class GeospatialItem(Resource):
 
         return [self._filter(item) for item in items]
 
-    create.description = (
-        Description('Create new items from a GeoJSON feature or feature'
-                    ' collection.')
-        .param('folderId', 'The ID of the parent folder.', required=True,
-               paramType='query')
-        .param('geoJSON', 'A GeoJSON object containing the features or feature'
-                          ' collection to add.', required=True,
-               paramType='query')
-        .errorResponse()
-        .errorResponse('Invalid GeoJSON was passed in request body.')
-        .errorResponse('GeoJSON feature or feature collection was not passed in'
-                       ' request body.')
-        .errorResponse("GeoJSON feature did not contain a property named"
-                       " 'name'.")
-        .errorResponse('Property name was invalid.')
-        .errorResponse('Write access was denied on the parent folder.', 403)
-        .notes("All GeoJSON features must contain a property named 'name' from"
-               " which the name of each created item is taken."))
-
     @access.public
+    @describeRoute(
+        Description('Search for an item by geospatial data.')
+        .param('q', 'Search query as a JSON object.', required=True)
+        .param('limit', 'Result set size limit (default=50).', required=False,
+               dataType='integer')
+        .param('offset', 'Offset into result set (default=0).', required=False,
+               dataType='integer')
+        .errorResponse()
+    )
     def find(self, params):
         """
         Search for an item by geospatial data.
 
         :param params: parameters to the API call, including 'q'.
         :type params: dict[str, unknown]
-        :return: filtered fields of the matching items with geospatial data
+        :returns: filtered fields of the matching items with geospatial data
                  appended to the 'geo' field of each item.
         :rtype: list[dict[str, unknown]]
         :raise RestException: on malformed API call.
@@ -160,16 +168,19 @@ class GeospatialItem(Resource):
 
         return self._find(query, limit, offset, sort)
 
-    find.description = (
-        Description('Search for an item by geospatial data.')
-        .param('q', 'Search query as a JSON object.', required=True)
+    @access.public
+    @describeRoute(
+        Description('Search for items that intersects with a GeoJSON object.')
+        .param('field', 'Name of field containing GeoJSON on which to search.',
+               required=True)
+        .param('geometry', 'Search query condition as a GeoJSON object.',
+               required=True)
         .param('limit', 'Result set size limit (default=50).', required=False,
                dataType='integer')
         .param('offset', 'Offset into result set (default=0).', required=False,
                dataType='integer')
-        .errorResponse())
-
-    @access.public
+        .errorResponse()
+    )
     def intersects(self, params):
         """
         Search for items that intersects with a GeoJSON object.
@@ -177,7 +188,7 @@ class GeospatialItem(Resource):
         :param params: parameters to the API call, including 'field' and
                        'geometry'.
         :type params: dict[str, unknown]
-        :return: filtered fields of the matching items with geospatial data
+        :returns: filtered fields of the matching items with geospatial data
                  appended to the 'geo' field of each item.
         :rtype: list[dict[str, unknown]]
         :raise RestException: on malformed API call.
@@ -191,10 +202,10 @@ class GeospatialItem(Resource):
             raise RestException("Invalid GeoJSON passed as 'geometry'"
                                 " parameter.")
 
-        if params['field'][:3] == '{}.'.format(GEOSPATIAL_FIELD):
+        if params['field'][:3] == '%s.' % GEOSPATIAL_FIELD:
             field = params['field'].strip()
         else:
-            field = '{}.{}'.format(GEOSPATIAL_FIELD, params['field'].strip())
+            field = '%s.%s' % (GEOSPATIAL_FIELD, params['field'].strip())
 
         query = {
             field: {
@@ -207,19 +218,6 @@ class GeospatialItem(Resource):
         limit, offset, sort = self.getPagingParameters(params, 'lowerName')
 
         return self._find(query, limit, offset, sort)
-
-    intersects.description = (
-        Description('Search for items that intersects with a GeoJSON object.')
-        .param('field', 'Name of field containing GeoJSON on which to search.',
-               required=True)
-        .param('geometry', 'Search query condition as a GeoJSON object.',
-               required=True)
-        .param('limit', 'Result set size limit (default=50).', required=False,
-               dataType='integer')
-        .param('offset', 'Offset into result set (default=0).', required=False,
-               dataType='integer')
-        .errorResponse()
-    )
 
     def _getGeometry(self, params):
         try:
@@ -235,70 +233,7 @@ class GeospatialItem(Resource):
                                 " parameter.")
 
     @access.public
-    def near(self, params):
-        """
-        Search for items that are in proximity to a GeoJSON point. The field on
-        which to search must be indexed by a '2dsphere' index. Anonymous users
-        may not use 'ensureIndex' to create such an index.
-
-        :param params: parameters to the API call, including 'field' and
-                       'geometry'.
-        :type params: dict[str, unknown]
-        :return: filtered fields of the matching items with geospatial data
-                 appended to the 'geo' field of each item.
-        :rtype: list[dict[str, unknown]]
-        :raise RestException: on malformed or forbidden API call.
-        """
-        self.requireParams(('field', 'geometry'), params)
-
-        condition = {
-            '$geometry': self._getGeometry(params)
-        }
-
-        for param in ('maxDistance', 'minDistance'):
-            if param in params:
-                try:
-                    distance = float(params[param])
-
-                    if distance < 0.0:
-                        raise ValueError
-
-                except ValueError:
-                    raise RestException("Parameter '{}' must be a number."
-                                        .format(param))
-
-                condition['$'+param] = distance
-
-        if params['field'][:3] == '{}.'.format(GEOSPATIAL_FIELD):
-            field = params['field'].strip()
-        else:
-            field = '{}.{}'.format(GEOSPATIAL_FIELD, params['field'].strip())
-
-        if params.get('ensureIndex', False):
-            user = self.getCurrentUser()
-
-            if not user:
-                raise RestException('Index creation denied.', 403)
-
-            self.model('item').collection.ensure_index([(field, GEOSPHERE)])
-
-        query = {
-            field: {
-                '$near': condition
-            }
-        }
-
-        limit, offset, sort = self.getPagingParameters(params, 'lowerName')
-
-        try:
-            items = self._find(query, limit, offset, sort)
-        except OperationFailure:
-            raise RestException("Field '{}' must be indexed by a 2dsphere"
-                                " index.".format(field))
-
-        return items
-
-    near.description = (
+    @describeRoute(
         Description('Search for items that are in proximity to a GeoJSON'
                     ' point.')
         .param('field', 'Name of field containing GeoJSON on which to search.',
@@ -325,10 +260,91 @@ class GeospatialItem(Resource):
                " Anonymous users may not use 'ensureIndex' to create such an"
                " index.")
     )
+    def near(self, params):
+        """
+        Search for items that are in proximity to a GeoJSON point. The field on
+        which to search must be indexed by a '2dsphere' index. Anonymous users
+        may not use 'ensureIndex' to create such an index.
+
+        :param params: parameters to the API call, including 'field' and
+                       'geometry'.
+        :type params: dict[str, unknown]
+        :returns: filtered fields of the matching items with geospatial data
+                 appended to the 'geo' field of each item.
+        :rtype: list[dict[str, unknown]]
+        :raise RestException: on malformed or forbidden API call.
+        """
+        self.requireParams(('field', 'geometry'), params)
+
+        condition = {
+            '$geometry': self._getGeometry(params)
+        }
+
+        for param in ('maxDistance', 'minDistance'):
+            if param in params:
+                try:
+                    distance = float(params[param])
+
+                    if distance < 0.0:
+                        raise ValueError
+
+                except ValueError:
+                    raise RestException("Parameter '%s' must be a number." %
+                                        param)
+
+                condition['$'+param] = distance
+
+        if params['field'][:3] == '%s.' % GEOSPATIAL_FIELD:
+            field = params['field'].strip()
+        else:
+            field = '%s.%s' % (GEOSPATIAL_FIELD, params['field'].strip())
+
+        if params.get('ensureIndex', False):
+            user = self.getCurrentUser()
+
+            if not user:
+                raise RestException('Index creation denied.', 403)
+
+            self.model('item').collection.create_index([(field, GEOSPHERE)])
+
+        query = {
+            field: {
+                '$near': condition
+            }
+        }
+
+        limit, offset, sort = self.getPagingParameters(params, 'lowerName')
+
+        try:
+            items = self._find(query, limit, offset, sort)
+        except OperationFailure:
+            raise RestException("Field '%s' must be indexed by a 2dsphere"
+                                " index." % field)
+
+        return items
 
     _RADIUS_OF_EARTH = 6378137.0  # average in meters
 
     @access.public
+    @describeRoute(
+        Description('Search for items that are entirely within either a GeoJSON'
+                    ' polygon or a circular region.')
+        .param('field', 'Name of field containing GeoJSON on which to search.',
+               required=True)
+        .param('geometry', 'Search query condition as a GeoJSON polygon.',
+               required=False)
+        .param('center', 'Center of search radius as a GeoJSON point.',
+               required=False)
+        .param('radius', 'Search radius in meters.', required=False,
+               dataType='number')
+        .param('limit', 'Result set size limit (default=50).', required=False,
+               dataType='integer')
+        .param('offset', 'Offset into result set (default=0).', required=False,
+               dataType='integer')
+        .errorResponse()
+        .notes("Either parameter 'geometry' or both parameters 'center' "
+               " and 'radius' are required.")
+    )
     def within(self, params):
         """
         Search for items that are entirely within either a GeoJSON polygon or a
@@ -338,7 +354,7 @@ class GeospatialItem(Resource):
         :param params: parameters to the API call, including 'field' and either
                        'geometry' or both 'center' and 'radius'.
         :type params: dict[str, unknown]
-        :return: filtered fields of the matching items with geospatial data
+        :returns: filtered fields of the matching items with geospatial data
                  appended to the 'geo' field of each item.
         :rtype: list[dict[str, unknown]]
         :raise RestException: on malformed API call.
@@ -387,10 +403,10 @@ class GeospatialItem(Resource):
             raise RestException("Either parameter 'geometry' or both parameters"
                                 " 'center' and 'radius' are required.")
 
-        if params['field'][:3] == '{}.'.format(GEOSPATIAL_FIELD):
+        if params['field'][:3] == '%s.' % GEOSPATIAL_FIELD:
             field = params['field'].strip()
         else:
-            field = '{}.{}'.format(GEOSPATIAL_FIELD, params['field'].strip())
+            field = '%s.%s' % (GEOSPATIAL_FIELD, params['field'].strip())
 
         limit, offset, sort = self.getPagingParameters(params, 'lowerName')
 
@@ -402,28 +418,14 @@ class GeospatialItem(Resource):
 
         return self._find(query, limit, offset, sort)
 
-    within.description = (
-        Description('Search for items that are entirely within either a GeoJSON'
-                    ' polygon or a circular region.')
-        .param('field', 'Name of field containing GeoJSON on which to search.',
-               required=True)
-        .param('geometry', 'Search query condition as a GeoJSON polygon.',
-               required=False)
-        .param('center', 'Center of search radius as a GeoJSON point.',
-               required=False)
-        .param('radius', 'Search radius in meters.', required=False,
-               dataType='number')
-        .param('limit', 'Result set size limit (default=50).', required=False,
-               dataType='integer')
-        .param('offset', 'Offset into result set (default=0).', required=False,
-               dataType='integer')
-        .errorResponse()
-        .notes("Either parameter 'geometry' or both parameters 'center' "
-               " and 'radius' are required.")
-    )
-
     @access.public
     @loadmodel(model='item', level=AccessType.READ)
+    @describeRoute(
+        Description('Get an item and its geospatial data by ID.')
+        .param('id', 'The ID of the item.', paramType='path')
+        .errorResponse('ID was invalid.')
+        .errorResponse('Read access was denied for the item.', 403)
+    )
     def getGeospatial(self, item, params):
         """
         Get an item and its geospatial data by ID.
@@ -432,66 +434,16 @@ class GeospatialItem(Resource):
         :type item: dict[str, unknown]
         :param params: parameters to the API call, unused.
         :type params: dict[str, unknown]
-        :return: filtered fields of the item with geospatial data appended to
+        :returns: filtered fields of the item with geospatial data appended to
                  its 'geo' field.
         :rtype : dict[str, unknown]
         :raise RestException: on malformed or forbidden API call.
         """
         return self._filter(item)
 
-    getGeospatial.description = (
-        Description('Get an item and its geospatial data by ID.')
-        .param('id', 'The ID of the item.', paramType='path')
-        .errorResponse('ID was invalid.')
-        .errorResponse('Read access was denied for the item.', 403))
-
     @access.user
     @loadmodel(model='item', level=AccessType.WRITE)
-    def setGeospatial(self, item, params):
-        """
-        Set geospatial data on an item.
-
-        :param item: item on which to set geospatial data.
-        :type item: dict[str, unknown]
-        :param params: parameters to the API call, unused.
-        :type params: dict[str, unknown]
-        :return: filtered fields of the item with geospatial data appended to
-                 its 'geo' field.
-        :rtype : dict[str, unknown]
-        :raise RestException: on malformed, forbidden, or unauthorized API call.
-        """
-        try:
-            geospatial = json.load(cherrypy.request.body)
-        except ValueError:
-            raise RestException('Invalid JSON passed in request body.')
-
-        for k, v in geospatial.items():
-            if '.' in k or k[0] == '$':
-                raise RestException('Geospatial key name {} must not contain a'
-                                    ' period or begin with a dollar sign.'
-                                    .format(k))
-            if v:
-                try:
-                    GeoJSON.to_instance(v, strict=True)
-                except ValueError:
-                    raise RestException('Geospatial field with key {} does not'
-                                        ' contain valid GeoJSON: {}'
-                                        .format(k, v))
-
-        if GEOSPATIAL_FIELD not in item:
-            item[GEOSPATIAL_FIELD] = dict()
-
-        item[GEOSPATIAL_FIELD].update(geospatial.items())
-        keys = [k for k, v in item[GEOSPATIAL_FIELD].iteritems() if v is None]
-
-        for key in keys:
-            del item[GEOSPATIAL_FIELD][key]
-
-        item = self.model('item').updateItem(item)
-
-        return self._filter(item)
-
-    setGeospatial.description = (
+    @describeRoute(
         Description('Set geospatial fields on an item.')
         .notes('Set geospatial fields to null to delete them.')
         .param('id', 'The ID of the item.', paramType='path')
@@ -501,7 +453,47 @@ class GeospatialItem(Resource):
         .errorResponse('Invalid JSON was passed in request body.')
         .errorResponse('Geospatial key name was invalid.')
         .errorResponse('Geospatial field did not contain valid GeoJSON.')
-        .errorResponse('Write access was denied for the item.', 403))
+        .errorResponse('Write access was denied for the item.', 403)
+    )
+    def setGeospatial(self, item, params):
+        """
+        Set geospatial data on an item.
+
+        :param item: item on which to set geospatial data.
+        :type item: dict[str, unknown]
+        :param params: parameters to the API call, unused.
+        :type params: dict[str, unknown]
+        :returns: filtered fields of the item with geospatial data appended to
+                 its 'geo' field.
+        :rtype : dict[str, unknown]
+        :raise RestException: on malformed, forbidden, or unauthorized API call.
+        """
+        geospatial = self.getBodyJson()
+
+        for k, v in six.viewitems(geospatial):
+            if '.' in k or k[0] == '$':
+                raise RestException('Geospatial key name %s must not contain a'
+                                    ' period or begin with a dollar sign.' % k)
+            if v:
+                try:
+                    GeoJSON.to_instance(v, strict=True)
+                except ValueError:
+                    raise RestException('Geospatial field with key %s does not'
+                                        ' contain valid GeoJSON: %s' % (k, v))
+
+        if GEOSPATIAL_FIELD not in item:
+            item[GEOSPATIAL_FIELD] = dict()
+
+        item[GEOSPATIAL_FIELD].update(six.viewitems(geospatial))
+        keys = [k for k, v in six.viewitems(item[GEOSPATIAL_FIELD])
+                if v is None]
+
+        for key in keys:
+            del item[GEOSPATIAL_FIELD][key]
+
+        item = self.model('item').updateItem(item)
+
+        return self._filter(item)
 
     def _filter(self, item):
         """
@@ -509,7 +501,7 @@ class GeospatialItem(Resource):
 
         :param item: item whose fields to filter and geospatial data append.
         :type item: dict[str, unknown]
-        :return: filtered fields of the item with geospatial data appended to
+        :returns: filtered fields of the item with geospatial data appended to
                  its 'geo' field.
         :rtype : dict[str, unknown]
         """
@@ -535,7 +527,7 @@ class GeospatialItem(Resource):
         :type offset: int
         :param sort: field by which to sort the matching items
         :type sort: str
-        :return: filtered fields of the matching items with geospatial data
+        :returns: filtered fields of the matching items with geospatial data
                  appended to the 'geo' field of each item.
         :rtype : list[dict[str, unknown]]
         """

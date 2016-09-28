@@ -3,10 +3,13 @@ System Prerequisites
 
 The following software packages are required to be installed on your system:
 
-* `Python 2 <https://www.python.org>`_
+* `Python 2.7 or 3.4 <https://www.python.org>`_
 * `pip <https://pypi.python.org/pypi/pi>`_
 * `MongoDB 2.6+ <http://www.mongodb.org/>`_
 * `Node.js <http://nodejs.org/>`_
+* `curl <http://curl.haxx.se/>`_
+* `zlib <http://www.zlib.net/>`_
+* `libjpeg <http://libjpeg.sourceforge.net/>`_
 
 Additionally, in order to send out emails to users, Girder will need to be able
 to communicate with an SMTP server. Proper installation and configuration of
@@ -14,6 +17,15 @@ an SMTP server on your system is beyond the scope of these docs, but we
 recommend setting up `Postfix <http://www.postfix.org/documentation.html>`_.
 
 See the specific instructions for your platform below.
+
+.. note:: We perform continuous integration testing using Python 2.7 and Python 3.4.
+   The system *should* work on other versions of Python 3 as well, but we do not
+   verify that support in our automated testing at this time, so use at your own
+   risk.
+
+.. warning:: Some Girder plugins do not support Python 3 at this time due to
+   third party library dependencies. Namely, the HDFS Assetstore plugin and the
+   Metadata Extractor plugin will only be available in a Python 2.7 environment.
 
 * :ref:`debian-ubuntu`
 * :ref:`centos-fedora-rhel`
@@ -28,7 +40,7 @@ Debian / Ubuntu
 
 Install the prerequisites using APT: ::
 
-    sudo apt-get install curl g++ git libffi-dev make python-dev python-pip
+    sudo apt-get install curl g++ git libffi-dev make python-dev python-pip libjpeg-dev zlib1g-dev
 
 MongoDB 2.6 requires a special incantation to install at this time. Install
 the APT key with the following: ::
@@ -52,7 +64,7 @@ Reload the package database and install MongoDB server using APT: ::
 
 Enable the Node.js APT repository: ::
 
-    curl -sL https://deb.nodesource.com/setup | sudo bash -
+    curl -sL https://deb.nodesource.com/setup_4.x | sudo bash -
 
 Install Node.js and NPM using APT: ::
 
@@ -71,7 +83,7 @@ YUM repository: ::
 
 Install the prerequisites using YUM: ::
 
-   sudo yum install curl gcc-c++ git libffi-devel make python-devel python-pip
+   sudo yum install curl gcc-c++ git libffi-devel make python-devel python-pip libjpeg-turbo-devel zlib-devel
 
 Create a file ``/etc/yum.repos.d/mongodb.repo`` that contains the following
 configuration information for the MongoDB YUM repository:
@@ -90,7 +102,7 @@ Install MongoDB server using YUM: ::
 
 Enable the Node.js YUM repository: ::
 
-    curl -sL https://rpm.nodesource.com/setup | sudo bash -
+    curl -sL https://rpm.nodesource.com/setup_4.x | sudo bash -
 
 Install Node.js and NPM using YUM: ::
 
@@ -148,9 +160,8 @@ From a command prompt, install pip: ::
     easy_install pip
 
 If bcrypt fails to install using pip (e.g., with Windows 7 x64 and Python
-2.7), you need to remove the line for bcrypt from the ``requirements.txt``
-file and manually install it. You can build the package from source or
-download a wheel file from
+2.7), you need to manually install it prior to installing girder. You can
+build the package from source or download a wheel file from
 `<https://bitbucket.org/alexandrul/py-bcrypt/downloads>`_ and install it
 with the following: ::
 

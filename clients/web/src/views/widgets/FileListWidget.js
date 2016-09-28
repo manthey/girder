@@ -7,6 +7,15 @@ girder.views.FileListWidget = girder.View.extend({
             this.collection.fetchNextPage();
         },
 
+        'click a.g-show-info': function (e) {
+            var cid = $(e.currentTarget).attr('file-cid');
+            new girder.views.FileInfoWidget({
+                el: $('#g-dialog-container'),
+                model: this.collection.get(cid),
+                parentView: this
+            }).render();
+        },
+
         'click a.g-update-contents': function (e) {
             var cid = $(e.currentTarget).parent().attr('file-cid');
             this.uploadDialog(cid);
@@ -49,12 +58,28 @@ girder.views.FileListWidget = girder.View.extend({
         }
     },
 
+    initialize: function (settings) {
+        this.upload = settings.upload;
+        this.fileEdit = settings.fileEdit;
+        this.checked = [];
+        this.collection = new girder.collections.FileCollection();
+        this.collection.altUrl = 'item/' +
+            (settings.itemId || settings.item.get('_id')) + '/files';
+        this.collection.append = true; // Append, don't replace pages
+        this.collection.on('g:changed', function () {
+            this.render();
+            this.trigger('g:changed');
+        }, this).fetch();
+
+        this.parentItem = settings.item;
+    },
+
     editFileDialog: function (cid) {
         this.editFileWidget = new girder.views.EditFileWidget({
             el: $('#g-dialog-container'),
             file: this.collection.get(cid),
             parentView: this
-        }).off('g:saved', null, this).on('g:saved', function (file) {
+        }).off('g:saved', null, this).on('g:saved', function () {
             this.render();
         }, this);
         this.editFileWidget.render();
@@ -77,32 +102,16 @@ girder.views.FileListWidget = girder.View.extend({
         }, this).render();
     },
 
-    initialize: function (settings) {
-        this.upload = settings.upload;
-        this.fileEdit = settings.fileEdit;
-        this.checked = [];
-        this.collection = new girder.collections.FileCollection();
-        this.collection.resourceName = 'item/' +
-            (settings.itemId || settings.item.get('_id')) + '/files';
-        this.collection.append = true; // Append, don't replace pages
-        this.collection.on('g:changed', function () {
-            this.trigger('g:changed');
-            this.render();
-        }, this).fetch();
-
-        this.parentItem = settings.item;
-    },
-
     render: function () {
         this.checked = [];
         this.$el.html(girder.templates.fileList({
-            files: this.collection.models,
+            files: this.collection.toArray(),
             hasMore: this.collection.hasNextPage(),
             girder: girder,
             parentItem: this.parentItem
         }));
 
-        this.$('.g-file-actions-container a[title]').tooltip({
+        this.$('.g-file-list-entry a[title]').tooltip({
             container: 'body',
             placement: 'auto',
             delay: 100
@@ -124,7 +133,7 @@ girder.views.FileListWidget = girder.View.extend({
      */
     insertFile: function (file) {
         this.collection.add(file);
-        this.trigger('g:changed');
         this.render();
+        this.trigger('g:changed');
     }
 });

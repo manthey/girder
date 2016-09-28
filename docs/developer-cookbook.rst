@@ -19,9 +19,10 @@ login process requires the client to make an HTTP ``GET`` request to the
 ``api/v1/user/authentication`` route, using HTTP Basic Auth to pass the user
 credentials. For example, for a user with login "john" and password "hello",
 first base-64 encode the string ``"john:hello"`` which yields ``"am9objpoZWxsbw=="``.
-Then take the base-64 encoded value and pass it via the ``Authorization`` header: ::
+Then take the base-64 encoded value and pass it via the ``Girder-Authorization``
+header (The ``Authorization`` header will also work): ::
 
-    Authorization: Basic am9objpoZWxsbw==
+    Girder-Authorization: Basic am9objpoZWxsbw==
 
 If the username and password are correct, you will receive a 200 status code and
 a JSON document from which you can extract the authentication token, e.g.:
@@ -48,6 +49,11 @@ form parameters, or as the value of a custom HTTP header with the key ``Girder-T
 .. note:: When logging in, the token is also sent to the client in a Cookie header so that web-based
    clients can persist its value conveniently for its duration. However, for security
    reasons, merely passing the cookie value back is not sufficient for authentication.
+
+.. note:: If you are using Girder's JavaScript web client library in a CORS environment,
+   be sure to set ``girder.corsAuth = true;`` in your application prior to calling
+   ``girder.login``. This will allow users' login sessions to be saved on the origin
+   site's cookie.
 
 Upload a file
 ^^^^^^^^^^^^^
@@ -189,30 +195,49 @@ static, so you can also just do the following anywhere:
 
     ModelImporter.model('folder')...
 
-Send a raw/streaming HTTP response body
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Send a raw or streaming HTTP response body
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 For consistency, the default behavior of a REST endpoint in Girder is to take
 the return value of the route handler and encode it in the format specified
 by the client in the ``Accepts`` header, usually ``application/json``. However,
 in some cases you may want to force your endpoint to send a raw response body
-back to the client. A common example would be downloading a file from the server;
-we want to send just the data, not try to encode it in JSON.
+back to the client.
 
-If you want to send a raw response, simply make your route handler return a
-generator function. In Girder, a raw response is also automatically a streaming
-response, giving developers full control of the buffer size of the response
-body. That is, each time you ``yield`` data in your generator function, the
+If you want to send a raw response, you can simply decorate your route handler
+with the ``girder.api.rest.rawResponse`` decorator, or call
+``girder.api.rest.setRawResponse()`` within the body of the route handler.
+For example:
+
+.. code-block:: python
+
+    from girder.api import access, rest
+
+    @access.public
+    @rest.rawResponse
+    def rawExample(self, params):
+        return 'raw string'
+
+That will make the response body precisely the string ``raw string``. If the data
+size being sent to the client is large or unbounded, you should use a streaming
+response.
+
+If you want to send a streaming response, simply make your route handler return a
+generator function. A streaming response is automatically sent as a raw response.
+Developers have full control of the buffer size of the streamed response
+body; each time you ``yield`` data in your generator function, the
 buffer will be flushed to the client. As a minimal example, the following
-route handler would send 10 chunks to the client, and the full response
+route handler would flush 10 chunks to the client, and the full response
 body would be ``0123456789``.
 
 .. code-block:: python
 
+    from girder.api import access
+
     @access.public
-    def rawExample(self, params):
+    def streamingExample(self, params):
         def gen():
-            for i in xrange(10):
+            for i in range(10):
                 yield str(i)
         return gen
 
@@ -375,6 +400,44 @@ run.
 
        add_python_test(my_test RESOURCE_LOCKS cherrypy mongo)
 
+.. _use_external_data:
+
+Downloading external data files for test cases
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In some cases, it is necessary to perform a test on a file that is too big store
+inside a repository.  For tests such as these, Girder provides a way to link to
+test files served at `<https://midas3.kitware.com>`_ and have them automatically
+downloaded and cached during the build stage.  To add a new external file, first
+make an account at `<https://midas3.kitware.com>`_ and upload a publicly accessible
+file.  When viewing the items containing those files on Midas, there will be a
+link to "Download key file" appearing as a key icon.  This file contains
+the MD5 hash of the file contents and can be committed inside the
+``tests/data/`` directory of Girder's repository.  This file can then be
+listed as an optional ``EXTERNAL_DATA`` argument to the ``add_python_test``
+function to have the file downloaded as an extra build step.  As an example,
+consider the file currently used for testing called ``tests/data/test_file.txt.md5``.
+To use this file in you test, you would add the test as follows
+
+.. code-block:: cmake
+
+    add_python_test(my_test EXTERNAL_DATA test_file.txt)
+
+The ``EXTERNAL_DATA`` keyword argument can take a list of files or even directories.
+When a directory is provided, it will download all files that exist in the given path.
+Inside your unit test, you can access these files under the path given
+by the environment variable ``GIRDER_TEST_DATA_PREFIX`` as follows
+
+.. code-block:: python
+
+    import os
+    test_file = os.path.join(
+        os.environ['GIRDER_TEST_DATA_PREFIX'],
+        'test_file.txt'
+    )
+    with open(test_file, 'r') as f:
+        content = f.read() # The content of the downloaded test file
+
 Serving a custom app from the server root
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -419,21 +482,27 @@ Supporting web browser operations where custom headers cannot be set
 Some aspects of the web browser make it infeasible to pass the usual
 ``Girder-Token`` authentication header when making a request. For example,
 if using an ``EventSource`` object for SSE, or when you must redirect the user's
-browser to a download endpoint that serves its content as an attachment. In such
-cases, you may allow specific REST API routes to authenticate using the Cookie.
-You should only do this if the endpoint is "read-only", that is, in cases where
-it does not make modifications to data on the server, to avoid vulnerabilities
-to Cross-Site Request Forgery attacks. If your endpoint is not read-only and
-you are unable to pass the ``Girder-Token`` header to it, you can pass a ``token``
-query parameter containing the token as a last resort, but in practice this will
-probably never be the case.
+browser to a download endpoint that serves its content as an attachment.
 
-In order to allow cookie authentication for your route, simply set the
-``cookieAuth`` property on your route handler function to ``True``. Example:
+In such cases, you may allow specific REST API routes to authenticate using the
+Cookie. To avoid vulnerabilities to Cross-Site Request Forgery attacks, you
+should only do this if the endpoint is "read-only" (that is, the endpoint does
+not make modifications to data on the server). Accordingly, only routes for
+``HEAD`` and ``GET`` requests allow cookie authentication to be enabled (without
+an additional override).
+
+In order to allow cookie authentication for your route, simply add the
+``cookie`` decorator to your route handler function. Example:
 
 .. code-block:: python
 
+    from girder.api import access
+
+    @access.cookie
     @access.public
     def download(self, params):
         ...
-    download.cookieAuth = True
+
+As a last resort, if your endpoint is not read-only and you are unable to pass
+the ``Girder-Token`` header to it, you can pass a ``token`` query parameter
+containing the token , but in practice this will probably never be the case.

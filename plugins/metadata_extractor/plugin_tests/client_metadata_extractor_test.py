@@ -19,10 +19,9 @@
 
 import os.path
 import sys
-import time
 
-# Need to set the environment variable before importing girder
-os.environ['GIRDER_PORT'] = '31201'
+# Need to set the environment variable before importing Girder
+os.environ['GIRDER_PORT'] = '31201'  # noqa
 
 from girder.constants import ROOT_DIR
 from server.metadata_extractor import ClientMetadataExtractor

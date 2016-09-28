@@ -20,7 +20,8 @@
 import datetime
 
 from .model_base import AccessControlledModel, ValidationException
-from girder.constants import AccessType
+from girder import events
+from girder.constants import AccessType, CoreEventHandler
 
 
 class Group(AccessControlledModel):
@@ -63,31 +64,38 @@ class Group(AccessControlledModel):
 
         self.exposeFields(level=AccessType.READ, fields=(
             '_id', 'name', 'public', 'description', 'created', 'updated',
-            'addAllowed'))
+            'addAllowed', '_addToGroupPolicy'))
 
-    def filter(self, group, user, accessList=False, requests=False):
+        events.bind('model.group.save.created',
+                    CoreEventHandler.GROUP_CREATOR_ACCESS,
+                    self._grantCreatorAccess)
+
+    def filter(self, *args, **kwargs):
         """
-        Filter a group document for display to the user.
+        Preserved override for kwarg backwards compatibility. Prior to the
+        refactor for centralizing model filtering, this method's first formal
+        parameter was called "group", whereas the centralized version's first
+        parameter is called "doc". This override simply detects someone using
+        the old kwarg and converts it to the new form.
 
-        :param group: The document to filter.
-        :type group: dict
-        :param user: The current user.
-        :type user: dict
-        :param accessList: Whether to include the access control list field.
-        :type accessList: bool
-        :param requests: Whether to include the requests list field.
-        :type requests: bool
-        :returns: The filtered group document.
+        The old method for this model took two boolean kwargs, ``accessList``
+        and ``requests``. These options are now deprecated, but are still
+        supported for backward compatibility.
         """
-        filtered = AccessControlledModel.filter(self, doc=group, user=user)
+        if 'group' in kwargs:
+            args = [kwargs.pop('group')] + list(args)
 
-        if accessList:
-            filtered['access'] = self.getFullAccessList(group)
+        acl = kwargs.pop('accessList') if 'accessList' in kwargs else False
+        reqs = kwargs.pop('requests') if 'requests' in kwargs else False
 
-        if requests:
-            filtered['requests'] = list(self.getFullRequestList(group))
+        group = super(Group, self).filter(*args, **kwargs)
 
-        return filtered
+        if acl and 'access' not in group:
+            group['access'] = self.getFullAccessList(args[0])
+        if reqs and 'requests' not in group:
+            group['requests'] = list(self.getFullRequestList(args[0]))
+
+        return group
 
     def validate(self, doc):
         doc['name'] = doc['name'].strip()
@@ -109,32 +117,13 @@ class Group(AccessControlledModel):
 
         return doc
 
-    def list(self, user=None, limit=0, offset=0, sort=None):
-        """
-        Search for groups or simply list all visible groups.
-
-        :param text: Pass this to perform a text search of all groups.
-        :param user: The user to search as.
-        :param limit: Result set size limit.
-        :param offset: Offset into the results.
-        :param sort: The sort direction.
-        """
-        # Perform the find; we'll do access-based filtering of the result
-        # set afterward.
-        cursor = self.find({}, sort=sort)
-
-        return self.filterResultsByPermission(
-            cursor=cursor, user=user, level=AccessType.READ, limit=limit,
-            offset=offset)
-
     def listMembers(self, group, offset=0, limit=0, sort=None):
         """
-        List members of the group, with names, ids, and logins.
+        List members of the group.
         """
-        fields = ['_id', 'firstName', 'lastName', 'login']
         return self.model('user').find({
             'groups': group['_id']
-        }, fields=fields, limit=limit, offset=offset, sort=sort)
+        }, limit=limit, offset=offset, sort=sort)
 
     def remove(self, group, **kwargs):
         """
@@ -143,28 +132,12 @@ class Group(AccessControlledModel):
         :param group: The group document to delete.
         :type group: dict
         """
-
         # Remove references to this group from user group membership lists
         self.model('user').update({
             'groups': group['_id']
         }, {
             '$pull': {'groups': group['_id']}
         })
-
-        acQuery = {
-            'access.groups.id': group['_id']
-        }
-        acUpdate = {
-            '$pull': {
-                'access.groups': {'id': group['_id']}
-            }
-        }
-
-        # Remove references to this group from access-controlled collections.
-        self.update(acQuery, acUpdate)
-        self.model('collection').update(acQuery, acUpdate)
-        self.model('folder').update(acQuery, acUpdate)
-        self.model('user').update(acQuery, acUpdate)
 
         # Finally, delete the document itself
         AccessControlledModel.remove(self, group)
@@ -196,7 +169,8 @@ class Group(AccessControlledModel):
 
         if not group['_id'] in user['groups']:
             user['groups'].append(group['_id'])
-            self.model('user').save(user, validate=False)
+            # saved again in setUserAccess...
+            user = self.model('user').save(user, validate=False)
 
         # Delete outstanding request if one exists
         self._deleteRequest(group, user)
@@ -234,7 +208,7 @@ class Group(AccessControlledModel):
 
             if not user['_id'] in group['requests']:
                 group['requests'].append(user['_id'])
-                self.save(group, validate=False)
+                group = self.save(group, validate=False)
 
         return group
 
@@ -284,8 +258,7 @@ class Group(AccessControlledModel):
         """
         return self.model('user').find(
             {'groupInvites.groupId': group['_id']},
-            limit=limit, offset=offset, sort=sort,
-            fields=['_id', 'firstName', 'lastName', 'login'])
+            limit=limit, offset=offset, sort=sort)
 
     def removeUser(self, group, user):
         """
@@ -302,10 +275,10 @@ class Group(AccessControlledModel):
         self._deleteRequest(group, user)
 
         # Remove any outstanding invitations for this group
-        user['groupInvites'] = filter(
+        user['groupInvites'] = list(filter(
             lambda inv: not inv['groupId'] == group['_id'],
-            user.get('groupInvites', []))
-        self.model('user').save(user, validate=False)
+            user.get('groupInvites', [])))
+        user = self.model('user').save(user, validate=False)
 
         # Remove all group access for this user on this group.
         self.setUserAccess(group, user, level=None, save=True)
@@ -326,28 +299,36 @@ class Group(AccessControlledModel):
         :type creator: dict
         :returns: The group document that was created.
         """
-        assert type(public) is bool
+        assert isinstance(public, bool)
 
         now = datetime.datetime.utcnow()
 
         group = {
             'name': name,
             'description': description,
+            'creatorId': creator['_id'],
             'created': now,
             'updated': now,
             'requests': []
         }
 
-        self.setPublic(group, public=public)
+        self.setPublic(group, public, save=False)
 
-        # Now validate and save the group
-        self.save(group)
+        return self.save(group)
 
-        # We make the creator a member of this group and also grant them
-        # admin access over the group.
+    def _grantCreatorAccess(self, event):
+        """
+        This callback makes the group creator an administrator member of the
+        group.
+
+        This generally should not be called or overridden directly, but it may
+        be unregistered from the `model.group.save.created` event.
+        """
+        group = event.info
+        creator = self.model('user').load(group['creatorId'], force=True,
+                                          exc=True)
+
         self.addUser(group, creator, level=AccessType.ADMIN)
-
-        return group
 
     def updateGroup(self, group):
         """
@@ -376,7 +357,7 @@ class Group(AccessControlledModel):
             yield {
                 'id': userId,
                 'login': user['login'],
-                'name': '{} {}'.format(user['firstName'], user['lastName'])
+                'name': '%s %s' % (user['firstName'], user['lastName'])
             }
 
     def hasAccess(self, doc, user=None, level=AccessType.READ):
@@ -395,7 +376,7 @@ class Group(AccessControlledModel):
         if user is None:
             # Short-circuit the case of anonymous users
             return level == AccessType.READ and doc.get('public', False) is True
-        elif user.get('admin', False) is True:
+        elif user['admin']:
             # Short-circuit the case of admins
             return True
         elif level == AccessType.READ:
@@ -422,7 +403,7 @@ class Group(AccessControlledModel):
                 return AccessType.READ
             else:
                 return AccessType.NONE
-        elif user.get('admin', False):
+        elif user['admin']:
             return AccessType.ADMIN
         else:
             access = doc.get('access', {})
@@ -442,13 +423,7 @@ class Group(AccessControlledModel):
 
             return level
 
-    def setAccessList(self, doc, access, save=False):
-        raise Exception('Not implemented.')  # pragma: no cover
-
     def setGroupAccess(self, doc, group, level, save=False):
-        raise Exception('Not implemented.')  # pragma: no cover
-
-    def copyAccessPolicies(self, src, dest, save=False):
         raise Exception('Not implemented.')  # pragma: no cover
 
     def setUserAccess(self, doc, user, level, save=False):
@@ -457,7 +432,8 @@ class Group(AccessControlledModel):
         field in the case of WRITE access and above since READ access is
         implied by membership or invitation.
         """
-        if level > AccessType.READ:
+        # save parameter not used?
+        if level is not None and level > AccessType.READ:
             doc = AccessControlledModel.setUserAccess(
                 self, doc, user, level, save=True)
         else:

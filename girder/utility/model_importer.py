@@ -18,6 +18,7 @@
 ###############################################################################
 
 import importlib
+import six
 
 from . import camelcase
 from girder import logger
@@ -34,26 +35,25 @@ def _loadModel(model, module, plugin):
     try:
         imported = importlib.import_module(module)
     except ImportError:
-        logger.exception('Could not load model "{}".'.format(module))
+        logger.exception('Could not load model "%s".' % module)
         raise
 
     try:
         constructor = getattr(imported, className)
     except AttributeError:  # pragma: no cover
-        raise Exception('Incorrect model class name "{}" for model "{}".'
-                        .format(className, module))
+        raise Exception('Incorrect model class name "%s" for model "%s".' % (
+            className, module))
 
     _modelInstances[plugin][model] = constructor()
 
 
-def clearModels():
+def reinitializeAll():
     """
-    Force reloading of all models by clearing the singleton cache. This is
-    used by the test suite to ensure that indices are built properly
-    at startup.
+    Force all models to reconnect/rebuild indices (needed for testing).
     """
-    global _modelInstances
-    _modelInstances = {}
+    for pluginModels in list(six.viewvalues(_modelInstances)):
+        for model in list(six.viewvalues(pluginModels)):
+            model.reconnect()
 
 
 class ModelImporter(object):
@@ -62,7 +62,7 @@ class ModelImporter(object):
     should extend/mixin this class.
     """
     @staticmethod
-    def model(model, plugin='_core'):
+    def model(model, plugin=None):
         """
         Call this to get the instance of the specified model. It will be
         lazy-instantiated.
@@ -77,14 +77,18 @@ class ModelImporter(object):
         :returns: The instantiated model, which is a singleton.
         """
         global _modelInstances
+
+        if plugin is None:
+            plugin = '_core'
+
         if plugin not in _modelInstances:
             _modelInstances[plugin] = {}
 
         if model not in _modelInstances[plugin]:
             if plugin == '_core':
-                module = 'girder.models.{}'.format(model)
+                module = 'girder.models.%s' % model
             else:
-                module = 'girder.plugins.{}.models.{}'.format(plugin, model)
+                module = 'girder.plugins.%s.models.%s' % (plugin, model)
 
             _loadModel(model, module, plugin)
 

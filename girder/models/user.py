@@ -22,8 +22,10 @@ import os
 import re
 
 from .model_base import AccessControlledModel, ValidationException
-from girder.constants import AccessType
-from girder.utility import config
+from girder import events
+from girder.constants import AccessType, CoreEventHandler, SettingKey, \
+    TokenScope
+from girder.utility import config, mail_utils
 
 
 class User(AccessControlledModel):
@@ -34,6 +36,9 @@ class User(AccessControlledModel):
     def initialize(self):
         self.name = 'user'
         self.ensureIndices(['login', 'email', 'groupInvites.groupId'])
+        self.prefixSearchFields = (
+            'login', ('firstName', 'i'), ('lastName', 'i'))
+
         self.ensureTextIndex({
             'login': 1,
             'firstName': 1,
@@ -44,11 +49,27 @@ class User(AccessControlledModel):
             '_id', 'login', 'public', 'firstName', 'lastName', 'admin',
             'created'))
         self.exposeFields(level=AccessType.ADMIN, fields=(
-            'size', 'email', 'groups', 'groupInvites'))
+            'size', 'email', 'groups', 'groupInvites', 'status',
+            'emailVerified'))
 
-    def filter(self, user, currentUser):
-        """Preserved override for kwarg backwards compatibility."""
-        return AccessControlledModel.filter(self, doc=user, user=currentUser)
+        events.bind('model.user.save.created',
+                    CoreEventHandler.USER_SELF_ACCESS, self._grantSelfAccess)
+        events.bind('model.user.save.created',
+                    CoreEventHandler.USER_DEFAULT_FOLDERS,
+                    self._addDefaultFolders)
+
+    def filter(self, *args, **kwargs):
+        """
+        Preserved override for kwarg backwards compatibility. Prior to the
+        refactor for centralizing model filtering, this method's first formal
+        parameter was called "folder", whereas the centralized version's first
+        parameter is called "doc". This override simply detects someone using
+        the old kwarg and converts it to the new form.
+        """
+        if 'currentUser' in kwargs and 'user' in kwargs:
+            args = [kwargs.pop('user')] + list(args)
+            kwargs['user'] = kwargs.pop('currentUser')
+        return super(User, self).filter(*args, **kwargs)
 
     def validate(self, doc):
         """
@@ -58,6 +79,7 @@ class User(AccessControlledModel):
         doc['email'] = doc.get('email', '').lower().strip()
         doc['firstName'] = doc.get('firstName', '').strip()
         doc['lastName'] = doc.get('lastName', '').strip()
+        doc['status'] = doc.get('status', 'enabled')
 
         cur_config = config.getConfig()
 
@@ -72,6 +94,10 @@ class User(AccessControlledModel):
         if not doc['lastName']:
             raise ValidationException('Last name must not be empty.',
                                       'lastName')
+
+        if doc['status'] not in ('pending', 'enabled', 'disabled'):
+            raise ValidationException(
+                'Status must be pending, enabled, or disabled.', 'status')
 
         if '@' in doc['login']:
             # Hard-code this constraint so we can always easily distinguish
@@ -107,6 +133,9 @@ class User(AccessControlledModel):
         existing = self.findOne({})
         if existing is None:
             doc['admin'] = True
+            # Ensure settings don't stop this user from logging in
+            doc['emailVerified'] = True
+            doc['status'] = 'enabled'
 
         return doc
 
@@ -119,31 +148,6 @@ class User(AccessControlledModel):
         :param progress: A progress context to record progress on.
         :type progress: girder.utility.progress.ProgressContext or None.
         """
-        # Remove creator references for this user.
-        creatorQuery = {
-            'creatorId': user['_id']
-        }
-        creatorUpdate = {
-            '$set': {'creatorId': None}
-        }
-        self.model('collection').update(creatorQuery, creatorUpdate)
-        self.model('folder').update(creatorQuery, creatorUpdate)
-        self.model('item').update(creatorQuery, creatorUpdate)
-
-        # Remove references to this user from access-controlled resources.
-        acQuery = {
-            'access.users.id': user['_id']
-        }
-        acUpdate = {
-            '$pull': {
-                'access.users': {'id': user['_id']}
-            }
-        }
-        self.update(acQuery, acUpdate)
-        self.model('collection').update(acQuery, acUpdate)
-        self.model('folder').update(acQuery, acUpdate)
-        self.model('group').update(acQuery, acUpdate)
-
         # Delete all authentication tokens owned by this user
         self.model('token').removeWithQuery({'userId': user['_id']})
 
@@ -231,6 +235,11 @@ class User(AccessControlledModel):
         :type public: bool
         :returns: The user document that was created.
         """
+        requireApproval = self.model('setting').get(
+            SettingKey.REGISTRATION_POLICY) == 'approve'
+        if admin:
+            requireApproval = False
+
         user = {
             'login': login,
             'email': email,
@@ -238,68 +247,237 @@ class User(AccessControlledModel):
             'lastName': lastName,
             'created': datetime.datetime.utcnow(),
             'emailVerified': False,
+            'status': 'pending' if requireApproval else 'enabled',
             'admin': admin,
             'size': 0,
+            'groups': [],
             'groupInvites': []
         }
 
-        self.setPassword(user, password)
+        self.setPassword(user, password, save=False)
+        self.setPublic(user, public, save=False)
 
-        self.setPublic(user, public=public)
-        # Must have already saved the user prior to calling this since we are
-        # granting the user access on himself.
-        self.setUserAccess(user, user, level=AccessType.ADMIN, save=True)
+        user = self.save(user)
 
-        # Create some default folders for the user and give the user admin
-        # access to them
-        publicFolder = self.model('folder').createFolder(
-            user, 'Public', parentType='user', public=True, creator=user)
-        privateFolder = self.model('folder').createFolder(
-            user, 'Private', parentType='user', public=False, creator=user)
-        self.model('folder').setUserAccess(
-            publicFolder, user, AccessType.ADMIN, save=True)
-        self.model('folder').setUserAccess(
-            privateFolder, user, AccessType.ADMIN, save=True)
+        verifyEmail = self.model('setting').get(
+            SettingKey.EMAIL_VERIFICATION) != 'disabled'
+        if verifyEmail:
+            self._sendVerificationEmail(user)
+
+        if requireApproval:
+            self._sendApprovalEmail(user)
 
         return user
 
-    def fileList(self, doc, user=None, path='', includeMetadata=False,
-                 subpath=True):
+    def canLogin(self, user):
         """
-        Generate a list of files within this user's folders.
+        Returns True if the user is allowed to login, e.g. email verification
+        is not needed and admin approval is not needed.
+        """
+        if user.get('status', 'enabled') == 'disabled':
+            return False
+        if self.emailVerificationRequired(user):
+            return False
+        if self.adminApprovalRequired(user):
+            return False
+        return True
+
+    def emailVerificationRequired(self, user):
+        """
+        Returns True if email verification is required and this user has not
+        yet verified their email address.
+        """
+        return (not user['emailVerified']) and self.model('setting').get(
+            SettingKey.EMAIL_VERIFICATION) == 'required'
+
+    def adminApprovalRequired(self, user):
+        """
+        Returns True if the registration policy requires admin approval and
+        this user is pending approval.
+        """
+        return user.get('status', 'enabled') == 'pending' and \
+            self.model('setting').get(
+                SettingKey.REGISTRATION_POLICY) == 'approve'
+
+    def _sendApprovalEmail(self, user):
+        url = '%s#user/%s' % (
+            mail_utils.getEmailUrlPrefix(), str(user['_id']))
+        text = mail_utils.renderTemplate('accountApproval.mako', {
+            'user': user,
+            'url': url
+        })
+        mail_utils.sendEmail(
+            toAdmins=True,
+            subject='Girder: Account pending approval',
+            text=text)
+
+    def _sendApprovedEmail(self, user):
+        text = mail_utils.renderTemplate('accountApproved.mako', {
+            'user': user,
+            'url': mail_utils.getEmailUrlPrefix()
+        })
+        mail_utils.sendEmail(
+            to=user.get('email'),
+            subject='Girder: Account approved',
+            text=text)
+
+    def _sendVerificationEmail(self, user):
+        token = self.model('token').createToken(
+            user, days=1, scope=TokenScope.EMAIL_VERIFICATION)
+        url = '%s#useraccount/%s/verification/%s' % (
+            mail_utils.getEmailUrlPrefix(), str(user['_id']), str(token['_id']))
+        text = mail_utils.renderTemplate('emailVerification.mako', {
+            'url': url
+        })
+        mail_utils.sendEmail(
+            to=user.get('email'),
+            subject='Girder: Email verification',
+            text=text)
+
+    def _grantSelfAccess(self, event):
+        """
+        This callback grants a user admin access to itself.
+
+        This generally should not be called or overridden directly, but it may
+        be unregistered from the `model.user.save.created` event.
+        """
+        user = event.info
+
+        self.setUserAccess(user, user, level=AccessType.ADMIN, save=True)
+
+    def _addDefaultFolders(self, event):
+        """
+        This callback creates "Public" and "Private" folders on a user, after
+        it is first created.
+
+        This generally should not be called or overridden directly, but it may
+        be unregistered from the `model.user.save.created` event.
+        """
+        if self.model('setting').get(
+                SettingKey.USER_DEFAULT_FOLDERS, 'public_private') \
+                == 'public_private':
+            user = event.info
+
+            publicFolder = self.model('folder').createFolder(
+                user, 'Public', parentType='user', public=True, creator=user)
+            privateFolder = self.model('folder').createFolder(
+                user, 'Private', parentType='user', public=False, creator=user)
+            # Give the user admin access to their own folders
+            self.model('folder').setUserAccess(
+                publicFolder, user, AccessType.ADMIN, save=True)
+            self.model('folder').setUserAccess(
+                privateFolder, user, AccessType.ADMIN, save=True)
+
+    def fileList(self, doc, user=None, path='', includeMetadata=False,
+                 subpath=True, data=True):
+        """
+        This function generates a list of 2-tuples whose first element is the
+        relative path to the file from the user's folders root and whose second
+        element depends on the value of the `data` flag. If `data=True`, the
+        second element will be a generator that will generate the bytes of the
+        file data as stored in the assetstore. If `data=False`, the second
+        element is the file document itself.
 
         :param doc: the user to list.
         :param user: a user used to validate data that is returned.
         :param path: a path prefix to add to the results.
         :param includeMetadata: if True and there is any metadata, include a
-                                result which is the json string of the
+                                result which is the JSON string of the
                                 metadata.  This is given a name of
                                 metadata[-(number).json that is distinct from
                                 any file within the item.
         :param subpath: if True, add the user's name to the path.
+        :param data: If True return raw content of each file as stored in the
+            assetstore, otherwise return file document.
+        :type data: bool
         """
         if subpath:
             path = os.path.join(path, doc['login'])
-        folders = self.model('folder').find({
-            'parentId': doc['_id'],
-            'parentCollection': 'user'
-        })
-        for folder in folders:
+        for folder in self.model('folder').childFolders(parentType='user',
+                                                        parent=doc, user=user):
             for (filepath, file) in self.model('folder').fileList(
-                    folder, user, path, includeMetadata, subpath=True):
+                    folder, user, path, includeMetadata, subpath=True,
+                    data=data):
                 yield (filepath, file)
 
-    def subtreeCount(self, doc):
+    def subtreeCount(self, doc, includeItems=True, user=None, level=None):
         """
         Return the size of the user's folders.  The user is counted as well.
 
         :param doc: The user.
+        :param includeItems: Whether to include items in the subtree count, or
+            just folders.
+        :type includeItems: bool
+        :param user: If filtering by permission, the user to filter against.
+        :param level: If filtering by permission, the required permission level.
+        :type level: AccessLevel
         """
         count = 1
         folders = self.model('folder').find({
             'parentId': doc['_id'],
             'parentCollection': 'user'
-        })
-        count += sum(self.model('folder').subtreeCount(folder)
-                     for folder in folders)
+        }, fields=('access',))
+
+        if level is not None:
+            folders = self.filterResultsByPermission(
+                cursor=folders, user=user, level=level)
+
+        count += sum(self.model('folder').subtreeCount(
+            folder, includeItems=includeItems, user=user, level=level)
+            for folder in folders)
         return count
+
+    def countFolders(self, user, filterUser=None, level=None):
+        """
+        Returns the number of top level folders under this user. Access
+        checking is optional; to circumvent access checks, pass ``level=None``.
+
+        :param user: The user whose top level folders to count.
+        :type collection: dict
+        :param filterUser: If performing access checks, the user to check
+            against.
+        :type filterUser: dict or None
+        :param level: The required access level, or None to return the raw
+            top-level folder count.
+        """
+        fields = () if level is None else ('access', 'public')
+
+        folderModel = self.model('folder')
+        folders = folderModel.find({
+            'parentId': user['_id'],
+            'parentCollection': 'user'
+        }, fields=fields)
+
+        if level is None:
+            return folders.count()
+        else:
+            return sum(1 for _ in folderModel.filterResultsByPermission(
+                cursor=folders, user=filterUser, level=level))
+
+    def updateSize(self, doc, user=None):
+        """
+        Recursively recomputes the size of this user and its underlying
+        folders and fixes the sizes as needed.
+
+        :param doc: The user.
+        :type doc: dict
+        :param user: (deprecated) Not used.
+        """
+        size = 0
+        fixes = 0
+        folders = self.model('folder').find({
+            'parentId': doc['_id'],
+            'parentCollection': 'user'
+        })
+        for folder in folders:
+            # fix folder size if needed
+            _, f = self.model('folder').updateSize(folder)
+            fixes += f
+            # get total recursive folder size
+            folder = self.model('folder').load(folder['_id'], force=True)
+            size += self.model('folder').getSizeRecursive(folder)
+        # fix value if incorrect
+        if size != doc.get('size'):
+            self.update({'_id': doc['_id']}, update={'$set': {'size': size}})
+            fixes += 1
+        return size, fixes

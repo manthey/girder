@@ -18,18 +18,31 @@
 ###############################################################################
 
 import asyncore
+import email
 import os
-import Queue
 import smtpd
+import sys
 import threading
 import time
+
+from six.moves import queue, range
 
 _startPort = 31000
 _maxTries = 100
 
 
 class MockSmtpServer(smtpd.SMTPServer):
-    mailQueue = Queue.Queue()
+    mailQueue = queue.Queue()
+
+    def __init__(self, localaddr, remoteaddr, decode_data=False):
+        kwargs = {}
+        if sys.version_info >= (3, 5):
+            # Python 3.5+ prints a warning if 'decode_data' isn't explicitly
+            # specified, but earlier versions don't accept the argument at all
+            kwargs['decode_data'] = decode_data
+        # smtpd.SMTPServer is an old-style class in Python2,
+        # so super() can't be used
+        smtpd.SMTPServer.__init__(self, localaddr, remoteaddr, **kwargs)
 
     def process_message(self, peer, mailfrom, rcpttos, data):
         self.mailQueue.put(data)
@@ -48,7 +61,7 @@ class MockSmtpReceiver(object):
         the current process so as to reduce potential conflicts with parallel
         tests that are started nearly simultaneously.
         """
-        for porttry in xrange(_maxTries):
+        for porttry in range(_maxTries):
             port = _startPort + ((porttry + os.getpid()) % _maxTries)
             try:
                 self.address = ('localhost', port)
@@ -77,12 +90,21 @@ class MockSmtpReceiver(object):
         self.smtp.close()
         self.thread.join()
 
-    def getMail(self):
+    def getMail(self, parse=False):
         """
         Return the message at the front of the queue.
         Raises Queue.Empty exception if there are no messages.
+
+        :param parse: Whether to parse the email into an email.message.Message
+            object. If False, just returns the raw email string.
+        :type parse: bool
         """
-        return self.smtp.mailQueue.get(block=False)
+        msg = self.smtp.mailQueue.get(block=False)
+
+        if parse:
+            return email.message_from_string(msg)
+        else:
+            return msg
 
     def isMailQueueEmpty(self):
         """Return whether or not the mail queue is empty"""

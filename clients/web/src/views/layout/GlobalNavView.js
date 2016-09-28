@@ -5,6 +5,8 @@
 girder.views.LayoutGlobalNavView = girder.View.extend({
     events: {
         'click .g-nav-link': function (event) {
+            event.preventDefault(); // so we can keep the href
+
             var link = $(event.currentTarget);
 
             girder.router.navigate(link.attr('g-target'), {trigger: true});
@@ -18,6 +20,7 @@ girder.views.LayoutGlobalNavView = girder.View.extend({
     initialize: function (settings) {
         girder.events.on('g:highlightItem', this.selectForView, this);
         girder.events.on('g:login', this.render, this);
+        girder.events.on('g:logout', this.render, this);
         girder.events.on('g:login-changed', this.render, this);
 
         settings = settings || {};

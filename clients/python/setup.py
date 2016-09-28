@@ -17,30 +17,28 @@
 #  limitations under the License.
 ###############################################################################
 
-
+import os
+import re
 from setuptools import setup, find_packages
-from pkg_resources import parse_requirements
 
-
-CLIENT_VERSION = '0.1.0'
-
-# parse_requirements() returns generator of pip.req.InstallRequirement objects
-install_reqs = []
-try:
-    install_reqs = parse_requirements(open('requirements.txt').read())
-except Exception:
-    pass
-
-# reqs is a list of requirement
-reqs = [str(req) for req in install_reqs]
-
+install_reqs = [
+    'diskcache',
+    'requests>=2.4.2',
+    'six'
+]
 with open('README.rst') as f:
     readme = f.read()
+
+init = os.path.join(os.path.dirname(__file__), 'girder_client', '__init__.py')
+with open(init) as fd:
+    version = re.search(
+        r'^__version__\s*=\s*[\'"]([^\'"]*)[\'"]',
+        fd.read(), re.MULTILINE).group(1)
 
 # perform the install
 setup(
     name='girder-client',
-    version=CLIENT_VERSION,
+    version=version,
     description='Python client for interacting with Girder servers',
     long_description=readme,
     author='Kitware, Inc.',
@@ -55,7 +53,7 @@ setup(
         'Programming Language :: Python :: 2'
     ],
     packages=find_packages(exclude=('tests.*', 'tests')),
-    install_requires=reqs,
+    install_requires=install_reqs,
     zip_safe=False,
     entry_points={
         'console_scripts': [

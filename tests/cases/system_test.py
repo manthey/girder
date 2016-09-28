@@ -20,6 +20,7 @@
 import json
 import os
 import time
+import six
 
 from subprocess import check_output, CalledProcessError
 
@@ -61,11 +62,11 @@ class SystemTestCase(base.TestCase):
         self.assertEqual(resp.json['apiVersion'], API_VERSION)
 
         try:
-            # Get the current git head
+            # Get the current Git head
             sha = check_output(
                 ['git', 'rev-parse', 'HEAD'],
                 cwd=ROOT_DIR
-            ).strip()
+            ).decode().strip()
         except CalledProcessError:
             usingGit = False
 
@@ -106,10 +107,19 @@ class SystemTestCase(base.TestCase):
         }, user=users[0])
         self.assertStatus(resp, 400)
 
-        # Set a valid setting key
+        # Set an invalid setting value, should fail
         resp = self.request(path='/system/setting', method='PUT', params={
             'key': SettingKey.PLUGINS_ENABLED,
             'value': json.dumps(obj)
+        }, user=users[0])
+        self.assertStatus(resp, 400)
+        self.assertEqual(resp.json['message'],
+                         'Required plugin _invalid_ does not exist.')
+
+        # Set a valid value
+        resp = self.request(path='/system/setting', method='PUT', params={
+            'key': SettingKey.PLUGINS_ENABLED,
+            'value': json.dumps(['geospatial', 'oauth'])
         }, user=users[0])
         self.assertStatusOk(resp)
 
@@ -118,7 +128,7 @@ class SystemTestCase(base.TestCase):
             'key': SettingKey.PLUGINS_ENABLED
         }, user=users[0])
         self.assertStatusOk(resp)
-        self.assertEqual(resp.json, obj[:-1])
+        self.assertEqual(set(resp.json), set(['geospatial', 'oauth']))
 
         # We should now clear the setting
         resp = self.request(path='/system/setting', method='DELETE', params={
@@ -138,7 +148,7 @@ class SystemTestCase(base.TestCase):
         # We should also be able to put several setting using a JSON list
         resp = self.request(path='/system/setting', method='PUT', params={
             'list': json.dumps([
-                {'key': SettingKey.PLUGINS_ENABLED, 'value': json.dumps(obj)},
+                {'key': SettingKey.PLUGINS_ENABLED, 'value': json.dumps(())},
                 {'key': SettingKey.COOKIE_LIFETIME, 'value': None},
             ])
         }, user=users[0])
@@ -152,7 +162,7 @@ class SystemTestCase(base.TestCase):
             ])
         }, user=users[0])
         self.assertStatusOk(resp)
-        self.assertEqual(resp.json[SettingKey.PLUGINS_ENABLED], obj[:-1])
+        self.assertEqual(resp.json[SettingKey.PLUGINS_ENABLED], [])
 
         # We can get the default values, or ask for no value if the current
         # value is taken from the default
@@ -189,7 +199,7 @@ class SystemTestCase(base.TestCase):
             SettingKey.CORS_ALLOW_METHODS: {},
             SettingKey.CORS_ALLOW_HEADERS: {},
         }
-        allKeys = dict.fromkeys(SettingDefault.defaults.keys())
+        allKeys = dict.fromkeys(six.viewkeys(SettingDefault.defaults))
         allKeys.update(badValues)
         for key in allKeys:
             resp = self.request(path='/system/setting', method='PUT', params={
@@ -199,7 +209,7 @@ class SystemTestCase(base.TestCase):
             self.assertStatus(resp, 400)
             resp = self.request(path='/system/setting', method='PUT', params={
                 'key': key,
-                'value': SettingDefault.defaults.get(key, '')
+                'value': json.dumps(SettingDefault.defaults.get(key, ''))
             }, user=users[0])
             self.assertStatusOk(resp)
             resp = self.request(path='/system/setting', method='PUT', params={
@@ -216,10 +226,12 @@ class SystemTestCase(base.TestCase):
         resp = self.request(path='/system/plugins', user=self.users[0])
         self.assertStatusOk(resp)
         self.assertIn('all', resp.json)
-        pluginRoot = os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                                  'test_plugins')
+        pluginRoots = [os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                    'test_plugins'),
+                       os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                    'test_additional_plugins')]
         conf = config.getConfig()
-        conf['plugins'] = {'plugin_directory': pluginRoot}
+        conf['plugins'] = {'plugin_directory': ':'.join(pluginRoots)}
 
         resp = self.request(
             path='/system/plugins', method='PUT', user=self.users[0],
@@ -230,25 +242,31 @@ class SystemTestCase(base.TestCase):
             params={'plugins': '["has_deps"]'})
         self.assertStatusOk(resp)
         enabled = resp.json['value']
-        self.assertEqual(len(enabled), 2)
+        self.assertEqual(len(enabled), 3)
         self.assertTrue('test_plugin' in enabled)
+        self.assertTrue('does_nothing' in enabled)
+        resp = self.request(
+            path='/system/plugins', method='PUT', user=self.users[0],
+            params={'plugins': '["has_nonexistent_deps"]'},
+            exception=True)
+        self.assertStatus(resp, 400)
+        self.assertEqual(resp.json['message'],
+                         ("Required plugin a_plugin_that_does_not_exist"
+                          " does not exist."))
 
     def testBadPlugin(self):
         pluginRoot = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                   'test_plugins')
         conf = config.getConfig()
         conf['plugins'] = {'plugin_directory': pluginRoot}
-        # Try to enable a good plugin and a bad plugin.  Only the good plugin
-        # should be enabled.
+
+        # Enabling plugins with bad JSON/YML should still work.
         resp = self.request(
             path='/system/plugins', method='PUT', user=self.users[0],
             params={'plugins': '["test_plugin","bad_json","bad_yaml"]'})
         self.assertStatusOk(resp)
-        enabled = resp.json['value']
-        self.assertEqual(len(enabled), 1)
-        self.assertTrue('test_plugin' in enabled)
-        self.assertTrue('bad_json' not in enabled)
-        self.assertTrue('bad_yaml' not in enabled)
+        enabled = set(resp.json['value'])
+        self.assertEqual({'test_plugin', 'bad_json', 'bad_yaml'}, enabled)
 
     def testRestart(self):
         resp = self.request(path='/system/restart', method='PUT',
@@ -295,3 +313,126 @@ class SystemTestCase(base.TestCase):
         self.assertStatusOk(resp)
         # tests that check repair of different models are convered in the
         # individual models' tests
+
+    def testConsistencyCheck(self):
+        user = self.users[0]
+        c1 = self.model('collection').createCollection('c1', user)
+        f1 = self.model('folder').createFolder(
+            c1, 'f1', parentType='collection')
+        self.model('folder').createFolder(
+            c1, 'f2', parentType='collection')
+        f3 = self.model('folder').createFolder(
+            user, 'f3', parentType='user')
+        self.model('folder').createFolder(
+            user, 'f4', parentType='user')
+        i1 = self.model('item').createItem('i1', user, f1)
+        i2 = self.model('item').createItem('i2', user, f1)
+        self.model('item').createItem('i3', user, f1)
+        i4 = self.model('item').createItem('i4', user, f3)
+        self.model('item').createItem('i5', user, f3)
+        self.model('item').createItem('i6', user, f3)
+        assetstore = {'_id': 0}
+        self.model('file').createFile(user, i1, 'foo', 7, assetstore)
+        self.model('file').createFile(user, i1, 'foo', 13, assetstore)
+        self.model('file').createFile(user, i2, 'foo', 19, assetstore)
+        self.model('file').createFile(user, i4, 'foo', 23, assetstore)
+
+        self.assertEqual(
+            39, self.model('collection').load(c1['_id'], force=True)['size'])
+        self.assertEqual(
+            39, self.model('folder').load(f1['_id'], force=True)['size'])
+        self.assertEqual(
+            23, self.model('folder').load(f3['_id'], force=True)['size'])
+        self.assertEqual(
+            20, self.model('item').load(i1['_id'], force=True)['size'])
+        self.assertEqual(
+            23, self.model('user').load(user['_id'], force=True)['size'])
+
+        resp = self.request(path='/system/check', user=user, method='PUT')
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json['baseParentsFixed'], 0)
+        self.assertEqual(resp.json['orphansRemoved'], 0)
+        self.assertEqual(resp.json['sizesChanged'], 0)
+
+        self.model('item').update(
+            {'_id': i1['_id']}, update={'$set': {'baseParentId': None}})
+
+        resp = self.request(path='/system/check', user=user, method='PUT')
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json['baseParentsFixed'], 1)
+        self.assertEqual(resp.json['orphansRemoved'], 0)
+        self.assertEqual(resp.json['sizesChanged'], 0)
+
+        self.model('collection').update(
+            {'_id': c1['_id']}, update={'$set': {'size': 0}})
+        self.model('folder').update(
+            {'_id': f1['_id']}, update={'$set': {'size': 0}})
+        self.model('item').update(
+            {'_id': i1['_id']}, update={'$set': {'size': 0}})
+
+        resp = self.request(path='/system/check', user=user, method='PUT')
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json['baseParentsFixed'], 0)
+        self.assertEqual(resp.json['orphansRemoved'], 0)
+        self.assertEqual(resp.json['sizesChanged'], 3)
+
+        self.assertEqual(
+            39, self.model('collection').load(c1['_id'], force=True)['size'])
+        self.assertEqual(
+            39, self.model('folder').load(f1['_id'], force=True)['size'])
+        self.assertEqual(
+            23, self.model('folder').load(f3['_id'], force=True)['size'])
+        self.assertEqual(
+            20, self.model('item').load(i1['_id'], force=True)['size'])
+        self.assertEqual(
+            23, self.model('user').load(user['_id'], force=True)['size'])
+
+        self.model('folder').collection.delete_one({'_id': f3['_id']})
+
+        resp = self.request(path='/system/check', user=user, method='PUT')
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json['baseParentsFixed'], 0)
+        self.assertEqual(resp.json['orphansRemoved'], 3)
+        self.assertEqual(resp.json['sizesChanged'], 0)
+
+        self.assertEqual(
+            0, self.model('user').load(user['_id'], force=True)['size'])
+
+    def testLogRoute(self):
+        logRoot = os.path.join(ROOT_DIR, 'tests', 'cases', 'dummylogs')
+        config.getConfig()['logging'] = {'log_root': logRoot}
+
+        resp = self.request(path='/system/log', user=self.users[1], params={
+            'log': 'error',
+            'bytes': 0
+        })
+        self.assertStatus(resp, 403)
+
+        resp = self.request(path='/system/log', user=self.users[0], params={
+            'log': 'error',
+            'bytes': 0
+        }, isJson=False)
+        self.assertStatusOk(resp)
+        self.assertEqual(
+            self.getBody(resp),
+            '=== Last 12 bytes of %s/error.log: ===\n\nHello world\n' % logRoot)
+
+        resp = self.request(path='/system/log', user=self.users[0], params={
+            'log': 'error',
+            'bytes': 6
+        }, isJson=False)
+        self.assertStatusOk(resp)
+        self.assertEqual(
+            self.getBody(resp),
+            '=== Last 6 bytes of %s/error.log: ===\n\nworld\n' % logRoot)
+
+        resp = self.request(path='/system/log', user=self.users[0], params={
+            'log': 'info',
+            'bytes': 6
+        }, isJson=False)
+        self.assertStatusOk(resp)
+        self.assertEqual(
+            self.getBody(resp),
+            '=== Last 0 bytes of %s/info.log: ===\n\n' % logRoot)
+
+        del config.getConfig()['logging']

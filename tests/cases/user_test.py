@@ -18,13 +18,15 @@
 ###############################################################################
 
 import cherrypy
+import collections
 import datetime
 import re
+import six
 
 from .. import base
 
 from girder import events
-from girder.constants import AccessType, SettingKey
+from girder.constants import AccessType, SettingKey, TokenScope
 
 
 def setUpModule():
@@ -78,7 +80,7 @@ class UserTestCase(base.TestCase):
         }
         # First test all of the required parameters.
         self.ensureRequiredParams(
-            path='/user', method='POST', required=params.keys())
+            path='/user', method='POST', required=six.viewkeys(params))
 
         # Now test parameter validation
         resp = self.request(path='/user', method='POST', params=params)
@@ -117,13 +119,13 @@ class UserTestCase(base.TestCase):
         # Bad authentication header
         resp = self.request(
             path='/user/authentication', method='GET',
-            additionalHeaders=[('Authorization', 'Basic Not-Valid-64')])
+            additionalHeaders=[('Girder-Authorization', 'Basic Not-Valid-64')])
         self.assertStatus(resp, 401)
         self.assertEqual('Invalid HTTP Authorization header',
                          resp.json['message'])
         resp = self.request(
             path='/user/authentication', method='GET',
-            additionalHeaders=[('Authorization', 'Basic NotValid')])
+            additionalHeaders=[('Girder-Authorization', 'Basic NotValid')])
         self.assertStatus(resp, 401)
         self.assertEqual('Invalid HTTP Authorization header',
                          resp.json['message'])
@@ -154,6 +156,12 @@ class UserTestCase(base.TestCase):
                             basicAuth='badlogin:good:password')
         self.assertStatus(resp, 403)
         self.assertEqual('Login failed.', resp.json['message'])
+
+        # Login successfully with fallback Authorization header
+        resp = self.request(path='/user/authentication', method='GET',
+                            basicAuth='goodlogin:good:password',
+                            authHeader='Authorization')
+        self.assertStatusOk(resp)
 
         # Login successfully with login
         resp = self.request(path='/user/authentication', method='GET',
@@ -239,7 +247,7 @@ class UserTestCase(base.TestCase):
         self.assertStatus(resp, 400)
         self.assertEqual(resp.json['message'], 'Invalid ObjectId: bad_id')
 
-        resp = self.request(path='/user/{}'.format(user['_id']))
+        resp = self.request(path='/user/%s' % user['_id'])
         self._verifyUserDocument(resp.json, admin=False)
 
         params = {
@@ -247,13 +255,13 @@ class UserTestCase(base.TestCase):
             'firstName': 'NewFirst ',
             'lastName': ' New Last ',
         }
-        resp = self.request(path='/user/{}'.format(user['_id']), method='PUT',
+        resp = self.request(path='/user/%s' % user['_id'], method='PUT',
                             user=user, params=params)
         self.assertStatus(resp, 400)
         self.assertEqual(resp.json['message'], 'Invalid email address.')
 
         params['email'] = 'valid@email.com '
-        resp = self.request(path='/user/{}'.format(user['_id']), method='PUT',
+        resp = self.request(path='/user/%s' % user['_id'], method='PUT',
                             user=user, params=params)
         self.assertStatusOk(resp)
         self._verifyUserDocument(resp.json)
@@ -268,7 +276,7 @@ class UserTestCase(base.TestCase):
             'lastName': ' New Last ',
             'admin': 'true'
         }
-        resp = self.request(path='/user/{}'.format(user['_id']), method='PUT',
+        resp = self.request(path='/user/%s' % user['_id'], method='PUT',
                             user=user, params=params)
         self.assertStatusOk(resp)
         self._verifyUserDocument(resp.json)
@@ -276,7 +284,7 @@ class UserTestCase(base.TestCase):
 
         # test admin flag as non-admin
         params['admin'] = 'true'
-        resp = self.request(path='/user/{}'.format(nonAdminUser['_id']),
+        resp = self.request(path='/user/%s' % nonAdminUser['_id'],
                             method='PUT', user=nonAdminUser, params=params)
         self.assertStatus(resp, 403)
 
@@ -369,6 +377,9 @@ class UserTestCase(base.TestCase):
     def testPasswordChangeAndReset(self):
         user = self.model('user').createUser('user1', 'passwd', 'tst', 'usr',
                                              'user@user.com')
+        user2 = self.model('user').createUser('user2', 'passwd', 'tst', 'usr',
+                                              'user2@user.com')
+
         # Reset password should require email param
         resp = self.request(path='/user/password', method='DELETE', params={})
         self.assertStatus(resp, 400)
@@ -395,10 +406,11 @@ class UserTestCase(base.TestCase):
         self.assertStatus(resp, 403)
 
         self.assertTrue(base.mockSmtp.waitForMail())
-        msg = base.mockSmtp.getMail()
+        msg = base.mockSmtp.getMail(parse=True)
+        body = msg.get_payload(decode=True).decode('utf8')
 
         # Pull out the auto-generated password from the email
-        search = re.search('Your new password is: <b>(.*)</b>', msg)
+        search = re.search('Your new password is: <b>(.*)</b>', body)
         newPass = search.group(1)
 
         # Login with the new password
@@ -418,6 +430,15 @@ class UserTestCase(base.TestCase):
             'new': 'something_else'
         })
         self.assertStatus(resp, 401)
+
+        # Old password must not be empty
+        resp = self.request(path='/user/password', method='PUT', params={
+            'old': '',
+            'new': 'something_else'
+        }, user=user)
+        self.assertStatus(resp, 400)
+        self.assertEqual(resp.json['message'],
+                         'Old password must not be empty.')
 
         # Old password must be correct
         resp = self.request(path='/user/password', method='PUT', params={
@@ -450,6 +471,122 @@ class UserTestCase(base.TestCase):
             resp.json['authToken'], ('token', 'expires'))
         self._verifyAuthCookie(resp)
 
+        # Non-admin user should not be able to reset admin's password
+        resp = self.request(path='/user/%s/password' % str(user['_id']),
+                            method='PUT', user=user2, params={
+                                'password': 'another password'
+        })
+        self.assertStatus(resp, 403)
+        self.assertEqual(resp.json['message'],
+                         'Administrator access required.')
+
+        # Admin user should be able to reset non-admin's password
+        resp = self.request(path='/user/%s/password' % str(user2['_id']),
+                            method='PUT', user=user, params={
+                                'password': 'foo  bar'
+        })
+        self.assertStatusOk(resp)
+
+        # Make sure we can login with new password
+        resp = self.request(path='/user/authentication', method='GET',
+                            basicAuth='user2:foo  bar')
+        self.assertStatusOk(resp)
+        self.assertHasKeys(resp.json, ('authToken',))
+        self.assertHasKeys(
+            resp.json['authToken'], ('token', 'expires'))
+        self._verifyAuthCookie(resp)
+
+    def testAccountApproval(self):
+        admin = self.model('user').createUser(
+            'admin', 'password', 'Admin', 'Admin', 'admin@example.com')
+
+        self.model('setting').set(SettingKey.REGISTRATION_POLICY, 'approve')
+
+        self.assertTrue(base.mockSmtp.isMailQueueEmpty())
+
+        user = self.model('user').createUser(
+            'user', 'password', 'User', 'User', 'user@example.com')
+
+        # pop email
+        self.assertTrue(base.mockSmtp.waitForMail())
+        base.mockSmtp.getMail(parse=True)
+
+        # cannot login without being approved
+        resp = self.request('/user/authentication', basicAuth='user:password')
+        self.assertStatus(resp, 403)
+        self.assertTrue(resp.json['extra'] == 'accountApproval')
+
+        # approve account
+        path = '/user/%s' % user['_id']
+        resp = self.request(path=path, method='PUT', user=admin, params={
+            'firstName': user['firstName'],
+            'lastName': user['lastName'],
+            'email': user['email'],
+            'status': 'enabled'
+        })
+        self.assertStatusOk(resp)
+
+        # pop email
+        self.assertTrue(base.mockSmtp.waitForMail())
+        base.mockSmtp.getMail(parse=True)
+
+        # can now login
+        resp = self.request('/user/authentication', basicAuth='user:password')
+        self.assertStatusOk(resp)
+
+        # disable account
+        path = '/user/%s' % user['_id']
+        resp = self.request(path=path, method='PUT', user=admin, params={
+            'firstName': user['firstName'],
+            'lastName': user['lastName'],
+            'email': user['email'],
+            'status': 'disabled'
+        })
+        self.assertStatusOk(resp)
+
+        # cannot login again
+        resp = self.request('/user/authentication', basicAuth='user:password')
+        self.assertStatus(resp, 403)
+        self.assertEqual(resp.json['extra'], 'disabled')
+
+    def testEmailVerification(self):
+        self.model('setting').set(SettingKey.EMAIL_VERIFICATION, 'required')
+
+        self.assertTrue(base.mockSmtp.isMailQueueEmpty())
+
+        self.model('user').createUser(
+            'admin', 'password', 'Admin', 'Admin', 'admin@example.com')
+
+        self.assertTrue(base.mockSmtp.waitForMail())
+        base.mockSmtp.getMail(parse=True)
+
+        self.model('user').createUser(
+            'user', 'password', 'User', 'User', 'user@example.com')
+
+        self.assertTrue(base.mockSmtp.waitForMail())
+        msg = base.mockSmtp.getMail(parse=True)
+
+        # cannot login without verifying email
+        resp = self.request('/user/authentication', basicAuth='user:password')
+        self.assertStatus(resp, 403)
+        self.assertTrue(resp.json['extra'] == 'emailVerification')
+
+        # get verification link
+        body = msg.get_payload(decode=True).decode('utf8')
+        link = re.search('<a href="(.*)">', body).group(1)
+        parts = link.split('/')
+        userId = parts[-3]
+        token = parts[-1]
+
+        # verify email with token
+        path = '/user/' + userId + '/verification'
+        resp = self.request(path=path, method='PUT', params={'token': token})
+        self.assertStatusOk(resp)
+
+        # can now login
+        resp = self.request('/user/authentication', basicAuth='user:password')
+        self.assertStatusOk(resp)
+
     def testTemporaryPassword(self):
         self.model('user').createUser('user1', 'passwd', 'tst', 'usr',
                                       'user@user.com')
@@ -470,9 +607,10 @@ class UserTestCase(base.TestCase):
         self.assertStatusOk(resp)
         self.assertEqual(resp.json['message'], "Sent temporary access email.")
         self.assertTrue(base.mockSmtp.waitForMail())
-        msg = base.mockSmtp.getMail()
+        msg = base.mockSmtp.getMail(parse=True)
         # Pull out the auto-generated token from the email
-        search = re.search('<a href="(.*)">', msg)
+        body = msg.get_payload(decode=True).decode('utf8')
+        search = re.search('<a href="(.*)">', body)
         link = search.group(1)
         linkParts = link.split('/')
         userId = linkParts[-3]
@@ -485,34 +623,41 @@ class UserTestCase(base.TestCase):
         self.assertEqual(resp.json['message'], "Parameter 'token' is required.")
         resp = self.request(path=path, method='GET',
                             params={'token': 'not valid'})
-        self.assertStatus(resp, 403)
+        self.assertStatus(resp, 400)
         resp = self.request(path=path, method='GET', params={'token': tokenId})
         self.assertStatusOk(resp)
         user = resp.json['user']
-        # We should now be able to change the password
-        resp = self.request(path='/user/password', method='PUT', params={
-            'old': tokenId,
-            'new': 'another_password'
-        }, user=user)
-        self.assertStatusOk(resp)
+
+        # We should have a real auth token now
+        self.assertTrue('girderToken' in resp.cookie)
+        authToken = resp.cookie['girderToken'].value
+        token = self.model('token').load(authToken, force=True, objectId=False)
+        self.assertEqual(str(token['userId']), userId)
+        self.assertFalse(self.model('token').hasScope(token, [
+            TokenScope.TEMPORARY_USER_AUTH
+        ]))
+        self.assertTrue(self.model('token').hasScope(token, [
+            TokenScope.USER_AUTH
+        ]))
+
         # Artificially adjust the token to have expired.
         token = self.model('token').load(tokenId, force=True, objectId=False)
         token['expires'] = (datetime.datetime.utcnow() -
                             datetime.timedelta(days=1))
         self.model('token').save(token)
         resp = self.request(path=path, method='GET', params={'token': tokenId})
-        self.assertStatus(resp, 403)
-        # Generate an email with a forwarded header
-        self.assertTrue(base.mockSmtp.isMailQueueEmpty())
-        resp = self.request(
-            path='/user/password/temporary', method='PUT',
-            params={'email': 'user@user.com'},
-            additionalHeaders=[('X-Forwarded-Host', 'anotherhost')])
+        self.assertStatus(resp, 401)
+
+        # We should now be able to change the password
+        resp = self.request(path='/user/password', method='PUT', params={
+            'old': tokenId,
+            'new': 'another_password'
+        }, user=user)
         self.assertStatusOk(resp)
-        self.assertEqual(resp.json['message'], "Sent temporary access email.")
-        self.assertTrue(base.mockSmtp.waitForMail())
-        msg = base.mockSmtp.getMail()
-        self.assertTrue('anotherhost' in msg)
+
+        # The token should have been deleted
+        token = self.model('token').load(tokenId, force=True, objectId=False)
+        self.assertEqual(token, None)
 
     def testUserCreation(self):
         admin = self.model('user').createUser(
@@ -566,6 +711,42 @@ class UserTestCase(base.TestCase):
         self.assertStatusOk(resp)
         self.assertTrue(resp.json['admin'])
 
+    def testDefaultUserFolders(self):
+        self.model('setting').set(SettingKey.USER_DEFAULT_FOLDERS,
+                                  'public_private')
+        user1 = self.model('user').createUser(
+            'folderuser1', 'passwd', 'tst', 'usr', 'folderuser1@user.com')
+        user1Folders = self.model('folder').find({
+            'parentId': user1['_id'],
+            'parentCollection': 'user'})
+        self.assertSetEqual(
+            set(folder['name'] for folder in user1Folders),
+            {'Public', 'Private'}
+        )
+
+        # User should be able to see that 2 folders exist
+        resp = self.request(path='/user/%s/details' % user1['_id'],
+                            user=user1)
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json['nFolders'], 2)
+
+        # Anonymous users should only see 1 folder exists
+        resp = self.request(path='/user/%s/details' % user1['_id'])
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json['nFolders'], 1)
+
+        self.model('setting').set(SettingKey.USER_DEFAULT_FOLDERS,
+                                  'none')
+        user2 = self.model('user').createUser(
+            'folderuser2', 'mypass', 'First', 'Last', 'folderuser2@user.com')
+        user2Folders = self.model('folder').find({
+            'parentId': user2['_id'],
+            'parentCollection': 'user'})
+        self.assertSetEqual(
+            set(folder['name'] for folder in user2Folders),
+            set()
+        )
+
     def testAdminFlag(self):
         admin = self.model('user').createUser(
             'user1', 'passwd', 'tst', 'usr', 'user@user.com')
@@ -590,33 +771,35 @@ class UserTestCase(base.TestCase):
         """
         This tests the general correctness of the model save hooks
         """
-        self.ctr = 0
-
         def preSave(event):
-            if '_id' not in event.info:
-                self.ctr += 1
+            count['pre'] += 1
+
+        def createdSave(event):
+            count['created'] += 1
 
         def postSave(event):
-            self.ctr += 2
+            count['post'] += 1
 
-        events.bind('model.user.save', 'test', preSave)
+        count = collections.defaultdict(int)
+        with events.bound('model.user.save.created', 'test', createdSave):
+            user = self.model('user').createUser(
+                login='myuser', password='passwd', firstName='A', lastName='A',
+                email='email@email.com')
+            self.assertEqual(count['created'], 1)
 
-        user = self.model('user').createUser(
-            login='myuser', password='passwd', firstName='A', lastName='A',
-            email='email@email.com')
-        self.assertEqual(self.ctr, 1)
+            count = collections.defaultdict(int)
+            with events.bound('model.user.save', 'test', preSave), \
+                    events.bound('model.user.save.after', 'test', postSave):
+                user = self.model('user').save(user, triggerEvents=False)
+                self.assertEqual(count['pre'], 0)
+                self.assertEqual(count['created'], 0)
+                self.assertEqual(count['post'], 0)
 
-        events.bind('model.user.save.after', 'test', postSave)
-        self.ctr = 0
-
-        user = self.model('user').save(user, triggerEvents=False)
-        self.assertEqual(self.ctr, 0)
-
-        self.model('user').save(user)
-        self.assertEqual(self.ctr, 2)
-
-        events.unbind('model.user.save', 'test')
-        events.unbind('model.user.save.after', 'test')
+                count = collections.defaultdict(int)
+                self.model('user').save(user)
+                self.assertEqual(count['pre'], 1)
+                self.assertEqual(count['created'], 0)
+                self.assertEqual(count['post'], 1)
 
     def testPrivateUser(self):
         """
@@ -634,8 +817,8 @@ class UserTestCase(base.TestCase):
 
         self.assertEqual(pvt['public'], False)
 
-        folder = self.model('folder').childFolders(
-            parentType='user', parent=pvt).next()
+        folder = six.next(self.model('folder').childFolders(
+            parentType='user', parent=pvt))
 
         # Private users should be able to upload files
         resp = self.request(path='/item', method='POST', user=pvt, params={

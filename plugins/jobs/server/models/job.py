@@ -18,31 +18,41 @@
 ###############################################################################
 
 import datetime
-import pymongo
+import six
+from bson import json_util
 
 from girder import events
-from girder.constants import AccessType
+from girder.constants import AccessType, SortDir
 from girder.models.model_base import AccessControlledModel, ValidationException
-from girder.plugins.jobs.constants import JobStatus
+from girder.plugins.jobs.constants import JobStatus, JOB_HANDLER_LOCAL
 
 
 class Job(AccessControlledModel):
     def initialize(self):
         self.name = 'job'
         compoundSearchIndex = (
-            ('userId', pymongo.ASCENDING),
-            ('created', pymongo.DESCENDING)
+            ('userId', SortDir.ASCENDING),
+            ('created', SortDir.DESCENDING)
         )
         self.ensureIndices([(compoundSearchIndex, {})])
 
-    def validate(self, job):
-        job['status'] = int(job['status'])
+        self.exposeFields(level=AccessType.READ, fields={
+            'title', 'type', 'created', 'interval', 'when', 'status',
+            'progress', 'log', 'meta', '_id', 'public', 'async', 'updated',
+            'timestamps'})
 
-        if not JobStatus.isValid(job['status']):
-            raise ValidationException('Invalid job status {}.'.format(
-                                      job.get['status']), field='status')
+        self.exposeFields(level=AccessType.SITE_ADMIN, fields={
+            'args', 'kwargs'})
+
+    def validate(self, job):
+        self._validateStatus(job['status'])
 
         return job
+
+    def _validateStatus(self, status):
+        if not JobStatus.isValid(status):
+            raise ValidationException(
+                'Invalid job status %s.' % status, field='status')
 
     def list(self, user=None, limit=0, offset=0, sort=None, currentUser=None):
         """
@@ -66,7 +76,7 @@ class Job(AccessControlledModel):
     def cancelJob(self, job):
         """
         Revoke/cancel a job. This simply triggers the jobs.cancel event and
-        sets the job status  to CANCELED. If one of the event handlers
+        sets the job status to CANCELED. If one of the event handlers
         calls preventDefault() on the event, this job will *not* be put into
         the CANCELED state.
 
@@ -75,13 +85,38 @@ class Job(AccessControlledModel):
         event = events.trigger('jobs.cancel', info=job)
 
         if not event.defaultPrevented:
-            job['status'] = JobStatus.CANCELED
-            self.save(job)
+            job = self.updateJob(job, status=JobStatus.CANCELED)
 
         return job
 
-    def createJob(self, title, type, args=(), kwargs={}, user=None, when=None,
-                  interval=0, public=False, handler=None):
+    def createLocalJob(self, module, function=None, **kwargs):
+        """
+        Takes the same keyword arguments as :py:func:`createJob`, except this
+        sets the handler to the local handler and takes additional parameters
+        to specify the module and function that should be run.
+
+        :param module: The name of the python module to run.
+        :type module: str
+        :param function: Function name within the module to run. If not passed,
+            the default name of "run" will be used.
+        :type function: str or None
+        :returns: The job that was created.
+        """
+        kwargs['handler'] = JOB_HANDLER_LOCAL
+        kwargs['save'] = False
+
+        job = self.createJob(**kwargs)
+
+        job['module'] = module
+
+        if function is not None:
+            job['function'] = function
+
+        return self.save(job)
+
+    def createJob(self, title, type, args=(), kwargs=None, user=None, when=None,
+                  interval=0, public=False, handler=None, async=False,
+                  save=True, otherFields=None):
         """
         Create a new job record.
 
@@ -98,21 +133,33 @@ class Job(AccessControlledModel):
         :param when: Minimum start time for the job (UTC).
         :type when: datetime
         :param interval: If this job should be recurring, set this to a value
-        in seconds representing how often it should occur. Set to <= 0 for
-        jobs that should only be run once.
+            in seconds representing how often it should occur. Set to <= 0 for
+            jobs that should only be run once.
         :type interval: int
         :param public: Public read access flag.
         :type public: bool
         :param handler: If this job should be handled by a specific handler,
-        use this field to store that information.
+            use this field to store that information.
         :param externalToken: If an external token was created for updating this
         job, pass it in and it will have the job-specific scope set.
         :type externalToken: token (dict) or None.
+        :param async: Whether the job is to be run asynchronously. For now this
+            only applies to jobs that are scheduled to run locally.
+        :type async: bool
+        :param save: Whether the documented should be saved to the database.
+        :type save: bool
+        :param otherFields: Any additional fields to set on the job.
+        :type otherFields: dict
         """
         now = datetime.datetime.utcnow()
 
         if when is None:
             when = now
+
+        if kwargs is None:
+            kwargs = {}
+
+        otherFields = otherFields or {}
 
         job = {
             'title': title,
@@ -125,10 +172,14 @@ class Job(AccessControlledModel):
             'interval': interval,
             'status': JobStatus.INACTIVE,
             'progress': None,
-            'log': '',
+            'log': [],
             'meta': {},
-            'handler': handler
+            'handler': handler,
+            'async': async,
+            'timestamps': []
         }
+
+        job.update(otherFields)
 
         self.setPublic(job, public=public)
 
@@ -136,16 +187,63 @@ class Job(AccessControlledModel):
             job['userId'] = user['_id']
             self.setUserAccess(job, user=user, level=AccessType.ADMIN)
 
-        job = self.save(job)
+        if save:
+            job = self.save(job)
+
+        return job
+
+    def save(self, job, *args, **kwargs):
+        """
+        We extend save so that we can serialize the kwargs before sending them
+        to the database. This will allow kwargs with $ and . characters in the
+        keys.
+        """
+        deserialized = job['kwargs']
+        job['kwargs'] = json_util.dumps(job['kwargs'])
+        job = AccessControlledModel.save(self, job, *args, **kwargs)
+        job['kwargs'] = deserialized
+        return job
+
+    def find(self, *args, **kwargs):
+        """
+        Overrides the default find behavior to exclude the log by default.
+
+        :param includeLog: Whether to include the log field in the documents.
+        :type includeLog: bool
+        """
+        kwargs['fields'] = self._computeFields(kwargs)
+        return super(Job, self).find(*args, **kwargs)
+
+    def load(self, *args, **kwargs):
+        """
+        We extend load to deserialize the kwargs back into a dict since we
+        serialized them on the way into the database.
+
+        :param includeLog: Whether to include the log field in the document.
+        :type includeLog: bool
+        """
+        kwargs['fields'] = self._computeFields(kwargs)
+        job = super(Job, self).load(*args, **kwargs)
+
+        if job and isinstance(job['kwargs'], six.string_types):
+            job['kwargs'] = json_util.loads(job['kwargs'])
+        if job and isinstance(job.get('log'), six.string_types):
+            # Legacy support: log used to be just a string, but we want to
+            # consistently return a list of strings now.
+            job['log'] = [job['log']]
 
         return job
 
     def scheduleJob(self, job):
         """
         Trigger the event to schedule this job. Other plugins are in charge of
-        actually scheduling and/or executing the job.
+        actually scheduling and/or executing the job, except in the case when
+        the handler is 'local'.
         """
-        events.trigger('jobs.schedule', info=job)
+        if job.get('async') is True:
+            events.daemon.trigger('jobs.schedule', info=job)
+        else:
+            events.trigger('jobs.schedule', info=job)
 
     def createJobToken(self, job, days=7):
         """
@@ -157,13 +255,13 @@ class Job(AccessControlledModel):
 
     def updateJob(self, job, log=None, overwrite=False, status=None,
                   progressTotal=None, progressCurrent=None, notify=True,
-                  progressMessage=None):
+                  progressMessage=None, otherFields=None):
         """
-        Update an existing job. Any of the updateable fields that are set to
-        None in the kwargs will not be modified. If you set progress information
-        on the job for the first time and set notify=True, a new notification
-        record for the job progress will be created. Job status changes will
-        also create a notification with type="job_status" if notify=True.
+        Update an existing job. Any of the updateable fields that are set to None in the kwargs of
+        this method will not be modified. If you set progress information on the job for the first
+        time and set notify=True, a new notification record for the job progress will be created.
+        If notify=True, job status changes will also create a notification with type="job_status",
+        and log changes will create a notification with type="job_log".
 
         :param job: The job document to update.
         :param log: Message to append to the job log. If you wish to overwrite
@@ -174,39 +272,106 @@ class Job(AccessControlledModel):
         :param status: New status for the job.
         :type status: JobStatus
         :param progressTotal: Max progress value for this job.
+        :param otherFields: Any additional fields to set on the job.
+        :type otherFields: dict
         """
-        changed = False
+        event = events.trigger('jobs.job.update', {
+            'job': job,
+            'params': {
+                'log': log,
+                'overwrite': overwrite,
+                'status': status,
+                'progressTotal': progressTotal,
+                'progressMessage': progressMessage,
+                'otherFields': otherFields
+            }
+        })
+
+        if event.defaultPrevented:
+            return job
+
+        now = datetime.datetime.utcnow()
+        user = None
+        otherFields = otherFields or {}
+
+        if job['userId']:
+            user = self.model('user').load(job['userId'], force=True)
+
+        updates = {
+            '$push': {},
+            '$set': {}
+        }
 
         if log is not None:
-            changed = True
-            if overwrite:
-                job['log'] = log
-            else:
-                job['log'] += log
+            self._updateLog(job, log, overwrite, now, notify, user, updates)
         if status is not None:
-            changed = True
-            job['status'] = status
+            self._updateStatus(job, status, now, notify, user, updates)
+        if progressMessage is not None or progressCurrent is not None or progressTotal is not None:
+            self._updateProgress(
+                job, progressTotal, progressCurrent, progressMessage, notify, user, updates)
 
-            if notify and job['userId']:
-                user = self.model('user').load(job['userId'], force=True)
-                expires = (datetime.datetime.utcnow() +
-                           datetime.timedelta(seconds=30))
-                self.model('notification').createNotification(
-                    type='job_status', data=self.filter(job, user), user=user,
-                    expires=expires)
-        if (progressMessage is not None or progressCurrent is not None or
-                progressTotal is not None):
-            changed = True
-            self._updateJobProgress(job, progressTotal, progressCurrent,
-                                    progressMessage, notify)
+        for k, v in six.viewitems(otherFields):
+            job[k] = v
+            updates['$set'][k] = v
 
-        if changed:
-            job['updated'] = datetime.datetime.utcnow()
-            job = self.save(job)
+        if updates['$set'] or updates['$push']:
+            if not updates['$push']:
+                del updates['$push']
+            job['updated'] = now
+            updates['$set']['updated'] = now
+
+            self.update({'_id': job['_id']}, update=updates, multi=False)
+
+            events.trigger('jobs.job.update.after', {
+                'job': job
+            })
 
         return job
 
-    def _updateJobProgress(self, job, total, current, message, notify):
+    def _updateLog(self, job, log, overwrite, now, notify, user, updates):
+        """Helper for updating a job's log."""
+        if overwrite:
+            updates['$set']['log'] = [log]
+        else:
+            updates['$push']['log'] = log
+        if notify and user:
+            expires = now + datetime.timedelta(seconds=30)
+            self.model('notification').createNotification(
+                type='job_log', data={
+                    '_id': job['_id'],
+                    'overwrite': overwrite,
+                    'text': log
+                }, user=user, expires=expires)
+
+    def _updateStatus(self, job, status, now, notify, user, updates):
+        """Helper for updating job progress information."""
+        try:
+            status = int(status)
+        except ValueError:
+            # Allow non int states
+            pass
+
+        self._validateStatus(status)
+
+        if status != job['status']:
+            job['status'] = status
+            updates['$set']['status'] = status
+            ts = {
+                'status': status,
+                'time': now
+            }
+            job['timestamps'].append(ts)
+            updates['$push']['timestamps'] = ts
+
+            if notify and user:
+                expires = now + datetime.timedelta(seconds=30)
+                filtered = self.filter(job, user)
+                filtered.pop('kwargs', None)
+                filtered.pop('log', None)
+                self.model('notification').createNotification(
+                    type='job_status', data=filtered, user=user, expires=expires)
+
+    def _updateProgress(self, job, total, current, message, notify, user, updates):
         """Helper for updating job progress information."""
         state = JobStatus.toNotificationStatus(job['status'])
 
@@ -228,20 +393,25 @@ class Job(AccessControlledModel):
                 'current': current,
                 'notificationId': notificationId
             }
+            updates['$set']['progress'] = job['progress']
         else:
             if total is not None:
                 job['progress']['total'] = total
+                updates['$set']['progress.total'] = total
             if current is not None:
                 job['progress']['current'] = current
+                updates['$set']['progress.current'] = current
             if message is not None:
                 job['progress']['message'] = message
+                updates['$set']['progress.message'] = message
 
-            if notify and job['userId']:
+            if notify and user:
                 if job['progress']['notificationId'] is None:
                     notification = self._createProgressNotification(
-                        job, total, current, state, message)
-                    job['progress']['notificationId'] = notification['_id']
-                    self.save(job)
+                        job, total, current, state, message, user)
+                    nid = notification['_id']
+                    job['progress']['notificationId'] = nid
+                    updates['$set']['progress.notificationId'] = nid
                 else:
                     notification = self.model('notification').load(
                         job['progress']['notificationId'])
@@ -252,31 +422,68 @@ class Job(AccessControlledModel):
                     current=job['progress']['current'],
                     total=job['progress']['total'])
 
-    def _createProgressNotification(self, job, total, current, state, message):
-        user = self.model('user').load(job['userId'], force=True)
+    def _createProgressNotification(self, job, total, current, state, message,
+                                    user=None):
+        if not user:
+            user = self.model('user').load(job['userId'], force=True)
         # TODO support channel-based notifications for jobs. For
         # right now we'll just go through the user.
         return self.model('notification').initProgress(
             user, job['title'], total, state=state, current=current,
             message=message, estimateTime=False)
 
-    def filter(self, job, user):
+    def filter(self, *args, **kwargs):
+        """
+        This predates the core generic model filtering utilities, so it does
+        a bunch of stuff that is not best practice but is preserved here for
+        backward compatibility. The ``jobs.filter`` event is now deprecated
+        and will be removed in the next major release in favor of the normal
+        ``exposeFields`` et al.
+        """
+        if 'job' in kwargs:
+            args = [kwargs.pop('folder')] + list(args)
+
+        job = args[0]
+
+        if 'user' in kwargs:
+            user = kwargs.pop('user')
+        else:
+            user = args[1]
+
         # Allow downstreams to filter job info as they see fit
         event = events.trigger('jobs.filter', info={
             'job': job,
             'user': user
         })
 
-        keys = ['title', 'type', 'created', 'interval', 'when', 'status',
-                'progress', 'log', 'meta', '_id', 'public']
+        keys = []
 
-        if user and user['admin'] is True:
-            keys.extend(('args', 'kwargs'))
+        if 'additionalKeys' in kwargs:
+            keys.extend(kwargs.pop('additionalKeys'))
 
+        removeFields = set()
         for resp in event.responses:
             if 'exposeFields' in resp:
                 keys.extend(resp['exposeFields'])
             if 'removeFields' in resp:
-                keys = [k for k in keys if k not in resp['removeFields']]
+                removeFields |= set(resp['removeFields'])
 
-        return self.filterDocument(job, allow=keys)
+        doc = super(Job, self).filter(job, user, additionalKeys=keys, **kwargs)
+
+        if 'kwargs' in doc and isinstance(doc['kwargs'], six.string_types):
+            doc['kwargs'] = json_util.loads(doc['kwargs'])
+
+        for field in removeFields:
+            if field in doc:
+                del doc[field]
+
+        return doc
+
+    def _computeFields(self, kwargs, includeLogDefault=False):
+        """
+        Helper to compute the projection operator for default log exclusion.
+        """
+        fields = kwargs.get('fields')
+        if fields is None and not kwargs.pop('includeLog', includeLogDefault):
+            fields = {'log': False}
+        return fields

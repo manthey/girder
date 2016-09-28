@@ -18,18 +18,17 @@
 ###############################################################################
 
 import bson
-import cherrypy
+from hashlib import sha512
 import pymongo
+import six
+from six import BytesIO
 import uuid
 
-from StringIO import StringIO
-from .model_importer import ModelImporter
 from girder import logger
+from girder.api.rest import setResponseHeader
 from girder.models import getDbConnection
 from girder.models.model_base import ValidationException
-
-from hashlib import sha512
-from . import sha512_state
+from . import hash_state
 from .abstract_assetstore_adapter import AbstractAssetstoreAdapter
 
 
@@ -38,22 +37,44 @@ from .abstract_assetstore_adapter import AbstractAssetstoreAdapter
 CHUNK_SIZE = 2097152
 
 
+def _ensureChunkIndices(collection):
+    """
+    Ensure that we have appropriate indices on the chunk collection.
+    """
+    collection.create_index([
+        ('uuid', pymongo.ASCENDING),
+        ('n', pymongo.ASCENDING)
+    ], unique=True)
+
+
 class GridFsAssetstoreAdapter(AbstractAssetstoreAdapter):
     """
-    This assetstore type stores files within mongoDB using the GridFS data
+    This assetstore type stores files within MongoDB using the GridFS data
     model.
     """
 
     @staticmethod
     def validateInfo(doc):
         """
-        Makes sure the database name is valid.
+        Validate the assetstore -- make sure we can connect to it and that the
+        necessary indexes are set up.
         """
         if not doc.get('db', ''):
             raise ValidationException('Database name must not be empty.', 'db')
         if '.' in doc['db'] or ' ' in doc['db']:
             raise ValidationException('Database name cannot contain spaces'
                                       ' or periods.', 'db')
+
+        try:
+            chunkColl = getDbConnection(
+                doc.get('mongohost', None), doc.get('replicaset', None),
+                autoRetry=False,
+                serverSelectionTimeoutMS=10000)[doc['db']].chunk
+            _ensureChunkIndices(chunkColl)
+        except pymongo.errors.ServerSelectionTimeoutError as e:
+            raise ValidationException(
+                'Could not connect to the database: %s' % str(e))
+
         return doc
 
     @staticmethod
@@ -64,34 +85,32 @@ class GridFsAssetstoreAdapter(AbstractAssetstoreAdapter):
         """
         :param assetstore: The assetstore to act on.
         """
-        self.assetstore = assetstore
+        super(GridFsAssetstoreAdapter, self).__init__(assetstore)
         try:
             self.chunkColl = getDbConnection(
-                assetstore.get('mongohost', None),
-                assetstore.get('replicaset', None))[assetstore['db']]['chunk']
+                self.assetstore.get('mongohost', None),
+                self.assetstore.get('replicaset', None)
+            )[self.assetstore['db']].chunk
+            _ensureChunkIndices(self.chunkColl)
         except pymongo.errors.ConnectionFailure:
             logger.error('Failed to connect to GridFS assetstore %s',
-                         assetstore['db'])
+                         self.assetstore['db'])
             self.chunkColl = 'Failed to connect'
             self.unavailable = True
             return
         except pymongo.errors.ConfigurationError:
             logger.exception('Failed to configure GridFS assetstore %s',
-                             assetstore['db'])
+                             self.assetstore['db'])
             self.chunkColl = 'Failed to configure'
             self.unavailable = True
             return
-        self.chunkColl.ensure_index([
-            ('uuid', pymongo.ASCENDING),
-            ('n', pymongo.ASCENDING)
-        ], unique=True)
 
     def initUpload(self, upload):
         """
         Creates a UUID that will be used to uniquely link each chunk to
         """
         upload['chunkUuid'] = uuid.uuid4().hex
-        upload['sha512state'] = sha512_state.serializeHex(sha512())
+        upload['sha512state'] = hash_state.serializeHex(sha512())
         return upload
 
     def uploadChunk(self, upload, chunk):
@@ -102,13 +121,14 @@ class GridFsAssetstoreAdapter(AbstractAssetstoreAdapter):
         # If we know the chunk size is too large or small, fail early.
         self.checkUploadSize(upload, self.getChunkSize(chunk))
 
-        if isinstance(chunk, basestring):
-            if isinstance(chunk, unicode):
-                chunk = chunk.encode('utf8')
-            chunk = StringIO(chunk)
+        if isinstance(chunk, six.text_type):
+            chunk = chunk.encode('utf8')
+
+        if isinstance(chunk, six.binary_type):
+            chunk = BytesIO(chunk)
 
         # Restore the internal state of the streaming SHA-512 checksum
-        checksum = sha512_state.restoreHex(upload['sha512state'])
+        checksum = hash_state.restoreHex(upload['sha512state'], 'sha512')
 
         # This bit of code will only do anything if there is a discrepancy
         # between the received count of the upload record and the length of
@@ -119,13 +139,13 @@ class GridFsAssetstoreAdapter(AbstractAssetstoreAdapter):
             cursor = self.chunkColl.find({
                 'uuid': upload['chunkUuid'],
                 'n': {'$gte': upload['received'] // CHUNK_SIZE}
-            }, fields=['data']).sort('n', pymongo.ASCENDING)
+            }, projection=['data']).sort('n', pymongo.ASCENDING)
             for result in cursor:
                 checksum.update(result['data'])
 
         cursor = self.chunkColl.find({
             'uuid': upload['chunkUuid']
-        }, fields=['n']).sort('n', pymongo.DESCENDING).limit(1)
+        }, projection=['n']).sort('n', pymongo.DESCENDING).limit(1)
         if cursor.count(True) == 0:
             n = 0
         else:
@@ -143,7 +163,7 @@ class GridFsAssetstoreAdapter(AbstractAssetstoreAdapter):
             # when it automatically retries.  Therefore, log this error but
             # don't stop.
             try:
-                self.chunkColl.insert({
+                self.chunkColl.insert_one({
                     'n': n,
                     'uuid': upload['chunkUuid'],
                     'data': bson.binary.Binary(data)
@@ -162,12 +182,14 @@ class GridFsAssetstoreAdapter(AbstractAssetstoreAdapter):
         except ValidationException:
             # The user tried to upload too much or too little.  Delete
             # everything we added
-            self.chunkColl.remove({'uuid': upload['chunkUuid'],
-                                   'n': {'$gte': startingN}}, multi=True)
+            self.chunkColl.delete_many({
+                'uuid': upload['chunkUuid'],
+                'n': {'$gte': startingN}
+            }, multi=True)
             raise
 
         # Persist the internal state of the checksum
-        upload['sha512state'] = sha512_state.serializeHex(checksum)
+        upload['sha512state'] = hash_state.serializeHex(checksum)
         upload['received'] += size
         return upload
 
@@ -180,7 +202,7 @@ class GridFsAssetstoreAdapter(AbstractAssetstoreAdapter):
         """
         cursor = self.chunkColl.find({
             'uuid': upload['chunkUuid']
-        }, fields=['n']).sort('n', pymongo.DESCENDING).limit(1)
+        }, projection=['n']).sort('n', pymongo.DESCENDING).limit(1)
         if cursor.count(True) == 0:
             offset = 0
         else:
@@ -193,7 +215,8 @@ class GridFsAssetstoreAdapter(AbstractAssetstoreAdapter):
         Grab the final state of the checksum and set it on the file object,
         and write the generated UUID into the file itself.
         """
-        hash = sha512_state.restoreHex(upload['sha512state']).hexdigest()
+        hash = hash_state.restoreHex(upload['sha512state'],
+                                     'sha512').hexdigest()
 
         file['sha512'] = hash
         file['chunkUuid'] = upload['chunkUuid']
@@ -201,22 +224,21 @@ class GridFsAssetstoreAdapter(AbstractAssetstoreAdapter):
 
         return file
 
-    def downloadFile(self, file, offset=0, headers=True):
+    def downloadFile(self, file, offset=0, headers=True, endByte=None,
+                     contentDisposition=None, extraParameters=None, **kwargs):
         """
         Returns a generator function that will be used to stream the file from
         the database to the response.
         """
+        if endByte is None or endByte > file['size']:
+            endByte = file['size']
+
         if headers:
-            mimeType = file.get('mimeType', 'application/octet-stream')
-            if not mimeType:
-                mimeType = 'application/octet-stream'
-            cherrypy.response.headers['Content-Type'] = mimeType
-            cherrypy.response.headers['Content-Length'] = file['size'] - offset
-            cherrypy.response.headers['Content-Disposition'] = \
-                'attachment; filename="%s"' % file['name']
+            setResponseHeader('Accept-Ranges', 'bytes')
+            self.setContentHeaders(file, offset, endByte, contentDisposition)
 
         # If the file is empty, we stop here
-        if file['size'] - offset <= 0:
+        if endByte - offset <= 0:
             return lambda: ''
 
         n = 0
@@ -230,16 +252,29 @@ class GridFsAssetstoreAdapter(AbstractAssetstoreAdapter):
         cursor = self.chunkColl.find({
             'uuid': file['chunkUuid'],
             'n': {'$gte': n}
-        }, fields=['data']).sort('n', pymongo.ASCENDING)
+        }, projection=['data']).sort('n', pymongo.ASCENDING)
 
         def stream():
             co = chunkOffset  # Can't assign to outer scope without "nonlocal"
+            position = offset
+            shouldBreak = False
+
             for chunk in cursor:
+                chunkLen = len(chunk['data'])
+
+                if position + chunkLen > endByte:
+                    chunkLen = endByte - position + co
+                    shouldBreak = True
+
+                yield chunk['data'][co:chunkLen]
+
+                if shouldBreak:
+                    break
+
+                position += chunkLen - co
+
                 if co > 0:
-                    yield chunk['data'][co:]
                     co = 0
-                else:
-                    yield chunk['data']
 
         return stream
 
@@ -252,10 +287,10 @@ class GridFsAssetstoreAdapter(AbstractAssetstoreAdapter):
             'chunkUuid': file['chunkUuid'],
             'assetstoreId': self.assetstore['_id']
         }
-        matching = ModelImporter().model('file').find(q, limit=2, fields=[])
+        matching = self.model('file').find(q, limit=2, projection=[])
         if matching.count(True) == 1:
             try:
-                self.chunkColl.remove({'uuid': file['chunkUuid']})
+                self.chunkColl.delete_many({'uuid': file['chunkUuid']})
             except pymongo.errors.AutoReconnect:
                 # we can't reach the database.  Go ahead and return; a system
                 # check will be necessary to remove the abandoned file
@@ -265,4 +300,4 @@ class GridFsAssetstoreAdapter(AbstractAssetstoreAdapter):
         """
         Delete all of the chunks associated with a given upload.
         """
-        self.chunkColl.remove({'uuid': upload['chunkUuid']})
+        self.chunkColl.delete_many({'uuid': upload['chunkUuid']})

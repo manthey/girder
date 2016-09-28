@@ -3,17 +3,35 @@
  */
 girder.views.AccessWidget = girder.View.extend({
     events: {
-        'click button.g-save-access-list': 'saveAccessList',
+        'click button.g-save-access-list': function (e) {
+            $(e.currentTarget).attr('disabled', 'disabled');
+            this.saveAccessList();
+        },
         'click a.g-action-remove-access': 'removeAccessEntry',
         'change .g-public-container .radio input': 'privacyChanged'
     },
 
+    /**
+     * @param settings.modelType {string} Display name for the resource type
+     *    being edited.
+     * @param [settings.hideRecurseOption=false] {bool} Whether to hide the recursive
+     *    propagation setting widgets.
+     * @param [settings.hideSaveButton=false] {bool} Whether to hide the "save"
+     *    button in non-modal view. This allows for users of this widget to
+     *    provide their own save button elsewhere on the page that can call the
+     *    saveAccessList() method of this widget when pressed.
+     * @param [settings.modal=true] {bool} Whether to render the widget as a
+     *    modal dialog or not.
+     */
     initialize: function (settings) {
-        this.model = settings.model;
         this.modelType = settings.modelType;
+        this.hideRecurseOption = settings.hideRecurseOption || false;
+        this.hideSaveButton = settings.hideSaveButton || false;
+        this.modal = _.has(settings, 'modal') ? settings.modal : true;
 
         this.searchWidget = new girder.views.SearchFieldWidget({
             placeholder: 'Start typing a name...',
+            modes: ['prefix', 'text'],
             types: ['group', 'user'],
             parentView: this
         }).on('g:resultClicked', this.addEntry, this);
@@ -28,23 +46,40 @@ girder.views.AccessWidget = girder.View.extend({
     },
 
     render: function () {
+        if (!this.model.get('access')) {
+            new girder.views.LoadingAnimation({
+                el: this.$el,
+                parentView: this
+            }).render();
+            return;
+        }
+
         var closeFunction;
-        if (this.modelType === 'folder') {
+        if (this.modal && this.modelType === 'folder') {
             girder.dialogs.handleOpen('folderaccess');
             closeFunction = function () {
                 girder.dialogs.handleClose('folderaccess');
             };
-        } else {
+        } else if (this.modal) {
             girder.dialogs.handleOpen('access');
             closeFunction = function () {
                 girder.dialogs.handleClose('access');
             };
         }
-        this.$el.html(girder.templates.accessEditor({
+
+        var template = this.modal ? girder.templates.accessEditor
+                                  : girder.templates.accessEditorNonModal;
+        this.$el.html(template({
             model: this.model,
             modelType: this.modelType,
-            public: this.model.get('public')
-        })).girderModal(this).on('hidden.bs.modal', closeFunction);
+            public: this.model.get('public'),
+            hideRecurseOption: this.hideRecurseOption,
+            hideSaveButton: this.hideSaveButton
+        }));
+
+        if (this.modal) {
+            this.$el.girderModal(this).on('hidden.bs.modal', closeFunction);
+        }
 
         _.each(this.model.get('access').groups, function (groupAccess) {
             this.$('#g-ac-list-groups').append(girder.templates.accessEntry({
@@ -154,9 +189,7 @@ girder.views.AccessWidget = girder.View.extend({
         }
     },
 
-    saveAccessList: function (event) {
-        $(event.currentTarget).attr('disabled', 'disabled');
-
+    saveAccessList: function () {
         // Rebuild the access list
         var acList = {
             users: [],
@@ -193,10 +226,21 @@ girder.views.AccessWidget = girder.View.extend({
             public: this.$('#g-access-public').is(':checked')
         });
 
+        var recurse = this.$('#g-apply-recursive').is(':checked');
+
         this.model.off('g:accessListSaved')
                   .on('g:accessListSaved', function () {
-                      this.$el.modal('hide');
-                  }, this).updateAccess();
+                      if (this.modal) {
+                          this.$el.modal('hide');
+                      }
+
+                      this.trigger('g:accessListSaved', {
+                          recurse: recurse
+                      });
+                  }, this).updateAccess({
+                      recurse: recurse,
+                      progress: true
+                  });
     },
 
     removeAccessEntry: function (event) {

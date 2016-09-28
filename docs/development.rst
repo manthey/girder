@@ -10,17 +10,40 @@ the tools used to develop Girder.
 Configuring Your Development Environment
 ----------------------------------------
 
-In order to develop Girder, you can refer to the :doc:`prerequisites` and
-:doc:`installation` sections to setup a local development environment. Once
-Girder is started via ``python -m girder``, the server will reload itself
-whenever a Python file is modified.
+In order to develop Girder, you should first refer to the :doc:`prerequisites`
+and :doc:`installation` sections to setup a basic local environment.
 
-To get the same auto-building behavior for JavaScript, we use ``grunt-watch``.
-Thus, running ``grunt watch`` in the root of the repository will watch for
-JavaScript, Stylus, and Jade changes in order to rebuild them on-the-fly. If you
-do not run ``grunt watch`` while making code changes, you will need to run the
-``grunt`` command to manually rebuild the web client in order to see your changes
-reflected.
+Next, you should install the Python development dependencies, to
+provide helpful development tools and to allow the test suite to run: ::
+
+    pip install -r requirements-dev.txt
+
+During development, once Girder is started via ``python -m girder``, the server
+will reload itself whenever a Python file is modified.
+
+Girder's web-based client application is built using the `Grunt <http://gruntjs.com/>`_
+task running tool. When you run the ``npm install`` command during Girder's
+installation, it will run all of the grunt tasks required to build the web client.
+Grunt tasks are run with the ``grunt`` executable, which is installed under your Girder source
+directory in the ``./node_modules/.bin/`` directory. You could conveniently update the
+``PATH`` by running ``export PATH=$(pwd)/node_modules/.bin:$PATH`` -- once you do that,
+you can just type ``grunt`` in your shell to run tasks.
+
+.. note :: Alternatively, you could install the grunt command line interface globally so
+   that the ``grunt`` command is automatically added to your ``PATH``. If you want to do
+   that, run ``npm install -g grunt-cli``. Note that this command requires ``sudo`` on many
+   systems.
+
+It is recommended during development to make use of the ``grunt-watch`` tool. Running
+``grunt watch`` in the root of the repository will watch for JavaScript, Stylus, and
+Jade changes in order to rebuild them on-the-fly. If you do not run ``grunt watch``
+while making code changes, you will need to run the ``grunt`` command to manually
+rebuild the web client in order to see your changes reflected.
+
+Note that some browser debugging tools do not play well with local variable
+mangling in JavaScript. If you want to use such a debugger and need to work around this,
+run ``grunt`` or ``grunt watch`` with the additional argument ``--debug-js``.
+This will prevent name mangling in the minified output.
 
 Vagrant
 ^^^^^^^
@@ -63,6 +86,15 @@ will override the defaults.
 
 Server Development
 ------------------
+
+All commits to the core python code must work in both python 2.7 and 3.4.
+Python code in plugins should also work in both, but some plugins may depend
+on third party libraries that do not support python 3. If that is the case, those
+plugins should declare ``"python3": false`` in their **plugin.json** or **plugin.yml** file
+to indicate that they do not support being run in python 3. Automated testing of
+those plugins should also be disabled for python3 if those tests would fail in a
+python 3 environment. This can be achieved by passing an additional flag ``PY2_ONLY``
+to ``add_python_test`` in your **plugin.cmake** file.
 
 Python Style
 ^^^^^^^^^^^^
@@ -182,9 +214,22 @@ and then run in your build directory ::
 
 before running your tests.
 
-You will find many useful methods for client side testing in the ``girderTest`` object
-defined at ``/clients/test/web/testUtils.js``.
+An example of a very simple client side test would be as follows ::
 
+    add_web_client_test(some_client_test "someSpec.js" PLUGIN "my_plugin")
+
+The ``PLUGIN`` argument indicates that "my_plugin" is the owner of ``some_client_test``, at the time of the test my_plugin and all of its dependencies will be loaded.
+
+If additional plugins are needed for a specific test, that can be achieved using the ``ENABLEDPLUGINS`` argument ::
+
+    add_web_client_test(another_client_test "anotherSpec.js" PLUGIN "my_plugin" ENABLEDPLUGINS "my_plugin" "jobs")
+
+Here ``ENABLEDPLUGINS`` ensures that my_plugin *and* the jobs plugin are loaded, along with their dependencies at the time of ``another_client_test``.
+
+.. note:: Core functionality shouldn't depend on plugins being enabled, this test definition is more suitable for a plugin. Information for testing plugins can be found under :doc:`plugin-development`.
+
+You will find many useful methods for client side testing in the ``girderTest`` object
+defined at ``/clients/web/test/testUtils.js``.
 
 
 Code Review
@@ -207,17 +252,45 @@ developing quality software. When performing a code review, ask the following:
     to any vulnerabilities (XSS, CSRF, DB Injection, etc)?
 
 
+Third-Party Libraries
+---------------------
+
+Girder's standard procedure is to use a tool like
+`piprot <https://github.com/sesh/piprot>`_ to check for out-of-date
+third-party library requirements on a quarterly basis (typically near the dates
+of the solstices and equinoxes). Library packages should generally be upgraded
+to the latest released version, except when:
+
+* Doing so would introduce any new unfixable bugs or regressions.
+* Other closely-affiliated projects (e.g.
+  `Romanesco <https://romanesco.readthedocs.org/>`_,
+  `Minerva <https://minervadocs.readthedocs.org/>`_) use the same library *and*
+  the other project cannot also feasibly be upgraded simultaneously.
+* The library has undergone a major API change, and development resources do
+  not permit updating Girder accordingly *or* Girder exposes parts of the
+  library as members of Girder's API surface (e.g. CherryPy) and upgrading
+  would cause incompatible API changes to be exposed. In this case, the library
+  should still be upgraded to the highest non-breaking version that is
+  available at the time.
+
+.. note:: In the event that a security vulnerability is discovered in a
+   third-party library used by Girder, the library *must* be upgraded to patch
+   the vulnerability immediately and without regard to the aforementioned
+   exceptions. However, attempts should still be made to maintain API
+   compatibility via monkey patching, wrapper classes, etc.
+
+
 Creating a new release
 ----------------------
 
 Girder releases are uploaded to `PyPI <https://pypi.python.org/pypi/girder>`_
-for easy installation via ``pip``.  In addition, the python source package and
-optional plugin and web client packages are stored as releases inside the
-official `github repository <https://github.com/girder/girder/releases>`_.
-The recommended process for generating a new release is described here.
+for easy installation via ``pip``. In addition, the python source packages
+are stored as releases inside the official
+`github repository <https://github.com/girder/girder/releases>`_. The
+recommended process for generating a new release is described here.
 
 1.  From the target commit, set the desired version number in ``package.json``
-    and ``docs/conf.py``.  Create a new commit and note the SHA; this will
+    and ``girder/__init__.py``. Create a new commit and note the SHA; this will
     become the release tag.
 
 2.  Ensure that all tests pass.
@@ -226,38 +299,27 @@ The recommended process for generating a new release is described here.
     (Packaging in an old directory could cause files and plugins to be
     mistakenly included.)
 
-4.  Run ``npm install && grunt package``.  This will generate three
-    new tarballs in the current directory:
-
-     ``girder-<version>.tar.gz``
-         This is the python source distribution for the core server API.
-     ``girder-web-<version>.tar.gz``
-         This is the web client libraries.
-     ``girder-plugins-<version>.tar.gz``
-         This contains all of the plugins in the main repository.
+4.  Run ``npm install && grunt package``.  This will generate the source
+    distribution tarball with a name like ``girder-<version>.tar.gz``.
 
 5.  Create a new virtual environment and install the python package into
-    it as well as the optional web and plugin components.  This should
-    not be done in the repository directory because the wrong Girder
-    package will be imported.  ::
+    it and build the web client. This should not be done in the repository
+    directory because the wrong Girder package will be imported.  ::
 
         mkdir test && cd test
         virtualenv release
         source release/bin/activate
         pip install ../girder-<version>.tar.gz
-        girder-install web -s ../girder-web-<version>.tar.gz
-        girder-install plugin -s ../girder-plugins-<version>.tar.gz
+        girder-install web
 
-6.  Now start up the Girder server and ensure that you can browse
-    the web client, plugins, and swagger docs.
+6.  Now start up the Girder server and ensure that you can browse the web
+    client, plugins, and swagger docs.
 
 7.  When you are confident everything is working correctly, generate
     a `new release <https://github.com/girder/girder/releases/new>`_
-    on GitHub.  You must be
-    sure to use a tag version of ``v<version>``, where ``<version>``
-    is the version number as it exists in ``package.json``.  For
-    example, ``v0.2.4``.  Attach the three tarballs you generated
-    to the release.
+    on GitHub.  You must be sure to use a tag version of ``v<version>``, where
+    ``<version>`` is the version number as it exists in ``package.json``.  For
+    example, ``v0.2.4``.  Attach the tarball you generated to the release.
 
 8.  Add the tagged version to `readthedocs <https://readthedocs.org/projects/girder/>`_
     and make sure it builds correctly.
@@ -285,9 +347,9 @@ version. The rules for versioning the python client package are as follows:
 
 The process for releasing the python client is as follows:
 
-1.  Set the version number inside ``clients/python/setup.py`` according to the
-    above rules. It is set in the line near the top of the file that looks like
-    ``CLIENT_VERSION = 'x.y.z'``
+1.  Set the version number inside ``clients/python/girder_client/__init__.py`` according
+    to the above rules. It is set in the line near the top of the file that looks like
+    ``__version__ = 'x.y.z'``
 
 2.  Change to the ``clients/python`` directory of the source tree and build the
     package using the following commands.

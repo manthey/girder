@@ -78,7 +78,11 @@
                 folderCreate: this.folderCreate,
                 itemCreate: this.itemCreate,
                 parentView: this
-            });
+            }).on('g:setCurrentModel', function () {
+                // When a user descends into the hierarchy, hide the collection
+                // actions list to avoid confusion.
+                this.$('.g-collection-header .g-collection-actions-button').hide();
+            }, this);
         },
 
         editCollection: function () {
@@ -89,7 +93,7 @@
                     el: container,
                     model: this.model,
                     parentView: this
-                }).on('g:saved', function (collection) {
+                }).on('g:saved', function () {
                     this.render();
                 }, this);
             }
@@ -133,8 +137,10 @@
                 modelType: 'collection',
                 model: this.model,
                 parentView: this
-            }).on('g:saved', function (collection) {
-                // need to do anything?
+            }).on('g:accessListSaved', function (params) {
+                if (params.recurse) {
+                    this.hierarchyWidget.refreshFolderList();
+                }
             }, this);
         }
     });
@@ -151,8 +157,6 @@
             girder.events.trigger('g:navigateTo', girder.views.CollectionView, _.extend({
                 collection: collection
             }, params || {}));
-        }, this).on('g:error', function () {
-            girder.router.navigate('/collections', {trigger: true});
         }, this).fetch();
     };
 
@@ -178,5 +182,4 @@
                 itemCreate: params.dialog === 'itemcreate'
             });
         });
-
 }());

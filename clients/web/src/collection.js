@@ -3,6 +3,7 @@
  * provides nice utilities for pagination and sorting.
  */
 girder.Collection = Backbone.Collection.extend({
+    model: girder.Model,
     resourceName: null,
 
     sortField: 'name',
@@ -60,7 +61,7 @@ girder.Collection = Backbone.Collection.extend({
      * Return the 0-indexed page number of the current page. Add 1 to this
      * result when displaying it to the user.
      */
-    pageNum: function (params) {
+    pageNum: function () {
         return Math.ceil((this.offset - this.length) / this.pageLimit);
     },
 
@@ -73,26 +74,29 @@ girder.Collection = Backbone.Collection.extend({
      * @param reset Set this to true to re-fetch the current page.
      */
     fetch: function (params, reset) {
-        if (this.resourceName === null) {
-            alert('Error: You must set a resourceName on your collection.');
+        if (this.altUrl === null && this.resourceName === null) {
+            alert('Error: You must set an altUrl or resourceName on your collection.');
             return;
         }
 
         if (reset) {
             this.offset = 0;
+        } else {
+            this.params = params || {};
         }
 
-        this.params = params || {};
+        var limit = this.pageLimit > 0 ? this.pageLimit + 1 : 0;
+
         var xhr = girder.restRequest({
             path: this.altUrl || this.resourceName,
             data: _.extend({
-                limit: this.pageLimit + 1,
+                limit: limit,
                 offset: this.offset,
                 sort: this.sortField,
                 sortdir: this.sortDir
             }, this.params)
         }).done(_.bind(function (list) {
-            if (list.length > this.pageLimit) {
+            if (this.pageLimit > 0 && list.length > this.pageLimit) {
                 // This means we have more pages to display still. Pop off
                 // the extra that we fetched.
                 list.pop();
@@ -103,15 +107,11 @@ girder.Collection = Backbone.Collection.extend({
 
             this.offset += list.length;
 
-            list.forEach(function (item) {
-                item.id = item._id;
-            });
-
             if (list.length > 0 || reset) {
-                if (this.append) {
+                if (this.append && !reset) {
                     this.add(list);
                 } else {
-                    this.set(list);
+                    this.reset(list);
                 }
             }
 

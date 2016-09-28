@@ -17,6 +17,7 @@
 #  limitations under the License.
 ###############################################################################
 
+import datetime
 import json
 import os
 
@@ -24,7 +25,6 @@ from tests import base
 from girder.constants import AssetstoreType, SettingKey
 from girder.models.model_base import ValidationException
 from girder.utility.system import formatSize
-from server import constants
 
 
 def setUpModule():
@@ -64,6 +64,9 @@ class QuotaTestCase(base.TestCase):
             'creator': self.admin
         }
         self.collection = self.model('collection').createCollection(**coll)
+        self.model('folder').createFolder(
+            parent=self.collection, parentType='collection', name='Public',
+            public=True, creator=self.admin)
 
     def _uploadFile(self, name, parent, parentType='folder', size=1024,
                     error=None, partial=False):
@@ -80,27 +83,30 @@ class QuotaTestCase(base.TestCase):
                         finishe the upload later.
         :returns: file: the created file object
         """
-        contents = os.urandom(size)
         if parentType != 'file':
             resp = self.request(
                 path='/file', method='POST', user=self.admin, params={
                     'parentType': parentType,
                     'parentId': parent['_id'],
                     'name': name,
-                    'size': len(contents),
+                    'size': size,
                     'mimeType': 'application/octet-stream'
                 }, exception=error is not None)
         else:
             resp = self.request(
                 path='/file/%s/contents' % str(parent['_id']), method='PUT',
                 user=self.admin, params={
-                    'size': len(contents),
+                    'size': size,
                 }, exception=error is not None)
         if error:
             self.assertStatus(resp, 500)
             self.assertEqual(resp.json['type'], 'girder')
             self.assertEqual(resp.json['message'][:len(error)], error)
             return None
+        # We don't create the contents until after we check for the first
+        # error.  This means that we can try to upload huge files without
+        # allocating the space for them
+        contents = os.urandom(size)
         self.assertStatusOk(resp)
         upload = resp.json
         fields = [('offset', 0), ('uploadId', upload['_id'])]
@@ -166,6 +172,8 @@ class QuotaTestCase(base.TestCase):
                         matches this.
         :param error: if set, this is a substring expected in an error message.
         """
+        from girder.plugins.user_quota import constants
+
         if model == 'user':
             key = constants.PluginSettings.QUOTA_DEFAULT_USER_QUOTA
         elif model == 'collection':
@@ -175,7 +183,7 @@ class QuotaTestCase(base.TestCase):
         except ValidationException as err:
             if not error:
                 raise
-            if error not in err.message:
+            if error not in err.args[0]:
                 raise
             return
         if testVal is not '__NOCHECK__':
@@ -273,7 +281,7 @@ class QuotaTestCase(base.TestCase):
             resp = self.multipartRequest(**file2kwargs)
             self.assertStatus(resp, 500)
         except AssertionError as exc:
-            self.assertTrue('Upload exceeded' in exc.message)
+            self.assertTrue('Upload exceeded' in exc.args[0])
         # Shrink the quota to smaller than all of our files.  Replacing an
         # existing file should still work, though
         self._setPolicy({'fileSizeQuota': 2048}, model, resource, user)
@@ -293,6 +301,14 @@ class QuotaTestCase(base.TestCase):
         # And a second 2 kb file will fail
         self._uploadFile('File too large', folder, size=2048,
                          error='Upload would exceed file storage quota')
+        # Set a policy with a large quota to test using NumberLong in the
+        # mongo settings.
+        self._setQuotaDefault(model, 5*1024**3)
+        # A small file should now upload
+        file = self._uploadFile('Six upload', folder, size=2048)
+        # But a huge one will fail
+        self._uploadFile('File too large', folder, size=6*1024**3,
+                         error='Upload would exceed file storage quota')
 
     def testAssetstorePolicy(self):
         """
@@ -300,24 +316,25 @@ class QuotaTestCase(base.TestCase):
         """
         # We want three assetstores for testing, one of which is unreachable.
         # We already have one, which is the current assetstore.
-        base.dropGridFSDatabase('girder_assetstore_user_quota_test')
+        base.dropGridFSDatabase('girder_test_user_quota_assetstore')
         params = {
             'name': 'Non-current Store',
             'type': AssetstoreType.GRIDFS,
-            'db': 'girder_assetstore_user_quota_test'
+            'db': 'girder_test_user_quota_assetstore'
         }
         resp = self.request(path='/assetstore', method='POST', user=self.admin,
                             params=params)
         self.assertStatusOk(resp)
-        params = {
+
+        # Create a broken assetstore. (Must bypass validation since it should
+        # not let us create an assetstore in a broken state).
+        self.model('assetstore').save({
             'name': 'Broken Store',
-            'type': AssetstoreType.GRIDFS,
-            'db': 'girder_assetstore_user_quota_test_broken',
-            'mongohost': 'mongodb://127.254.254.254:27016'
-        }
-        resp = self.request(path='/assetstore', method='POST', user=self.admin,
-                            params=params)
-        self.assertStatusOk(resp)
+            'type': AssetstoreType.FILESYSTEM,
+            'root': '/dev/null',
+            'created': datetime.datetime.utcnow()
+        }, validate=False)
+
         # Now get the assetstores and save their ids for later
         resp = self.request(path='/assetstore', method='GET', user=self.admin,
                             params={'sort': 'created'})

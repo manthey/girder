@@ -17,7 +17,8 @@
 #  limitations under the License.
 ###############################################################################
 
-import os.path
+import os
+import six
 
 from hachoir_core.error import HachoirError
 from hachoir_metadata import extractMetadata
@@ -58,15 +59,16 @@ class MetadataExtractor(object):
         Extract metadata from file on client or server using hachoir-metadata.
         """
         try:
-            parser = createParser(unicode(self.path), str(self.path))
+            parser = createParser(six.text_type(self.path),
+                                  six.binary_type(self.path))
 
             if parser is None:
-                raise HachoirError
+                raise HachoirError('no parser')
 
             extractor = extractMetadata(parser)
 
             if extractor is None:
-                raise HachoirError
+                raise HachoirError('no extractor')
 
             self.metadata = dict()
 

@@ -116,6 +116,14 @@ class AccessType:
     ADMIN = 2
     SITE_ADMIN = 100
 
+    @classmethod
+    def validate(cls, level):
+        level = int(level)
+        if level in (cls.NONE, cls.READ, cls.WRITE, cls.ADMIN, cls.SITE_ADMIN):
+            return level
+        else:
+            raise ValueError('Invalid AccessType: %d.' % level)
+
 
 class SettingKey:
     """
@@ -127,12 +135,19 @@ class SettingKey:
     EMAIL_FROM_ADDRESS = 'core.email_from_address'
     EMAIL_HOST = 'core.email_host'
     REGISTRATION_POLICY = 'core.registration_policy'
+    EMAIL_VERIFICATION = 'core.email_verification'
     SMTP_HOST = 'core.smtp_host'
+    SMTP_PORT = 'core.smtp.port'
+    SMTP_ENCRYPTION = 'core.smtp.encryption'
+    SMTP_USERNAME = 'core.smtp.username'
+    SMTP_PASSWORD = 'core.smtp.password'
     UPLOAD_MINIMUM_CHUNK_SIZE = 'core.upload_minimum_chunk_size'
     CORS_ALLOW_ORIGIN = 'core.cors.allow_origin'
     CORS_ALLOW_METHODS = 'core.cors.allow_methods'
     CORS_ALLOW_HEADERS = 'core.cors.allow_headers'
     ADD_TO_GROUP_POLICY = 'core.add_to_group_policy'
+    COLLECTION_CREATE_POLICY = 'core.collection_create_policy'
+    USER_DEFAULT_FOLDERS = 'core.user_default_folders'
 
 
 class SettingDefault:
@@ -143,20 +158,34 @@ class SettingDefault:
     defaults = {
         SettingKey.PLUGINS_ENABLED: [],
         SettingKey.COOKIE_LIFETIME: 180,
-        SettingKey.EMAIL_FROM_ADDRESS: 'no-reply@girder.org',
+        SettingKey.EMAIL_FROM_ADDRESS: 'Girder <no-reply@girder.org>',
         SettingKey.REGISTRATION_POLICY: 'open',
-        SettingKey.SMTP_HOST: 'localhost:25',
+        SettingKey.EMAIL_VERIFICATION: 'disabled',
+        SettingKey.SMTP_HOST: 'localhost',
+        SettingKey.SMTP_PORT: 25,
+        SettingKey.SMTP_ENCRYPTION: 'none',
         SettingKey.UPLOAD_MINIMUM_CHUNK_SIZE: 1024 * 1024 * 5,
         # These headers are necessary to allow the web server to work with just
         # changes to the CORS origin
         SettingKey.CORS_ALLOW_HEADERS:
             'Accept-Encoding, Authorization, Content-Disposition, '
-            'Content-Type, Cookie, Girder-Token',
+            'Content-Type, Cookie, Girder-Authorization, Girder-Token',
             # An apache server using reverse proxy would also need
             #  X-Requested-With, X-Forwarded-Server, X-Forwarded-For,
             #  X-Forwarded-Host, Remote-Addr
         SettingKey.ADD_TO_GROUP_POLICY: 'never',
+        SettingKey.COLLECTION_CREATE_POLICY: {
+            'open': False,
+            'groups': [],
+            'users': []
+        },
+        SettingKey.USER_DEFAULT_FOLDERS: 'public_private'
     }
+
+
+class SortDir(object):
+    ASCENDING = 1
+    DESCENDING = -1
 
 
 class TokenScope:
@@ -168,3 +197,102 @@ class TokenScope:
     ANONYMOUS_SESSION = 'core.anonymous_session'
     USER_AUTH = 'core.user_auth'
     TEMPORARY_USER_AUTH = 'core.user_auth.temporary'
+    EMAIL_VERIFICATION = 'core.email_verification'
+    PLUGINS_ENABLED_READ = 'core.plugins.read'
+    SETTINGS_READ = 'core.setting.read'
+    ASSETSTORES_READ = 'core.assetstore.read'
+    PARTIAL_UPLOAD_READ = 'core.partial_upload.read'
+    PARTIAL_UPLOAD_CLEAN = 'core.partial_upload.clean'
+    DATA_READ = 'core.data.read'
+    DATA_WRITE = 'core.data.write'
+    DATA_OWN = 'core.data.own'
+    USER_INFO_READ = 'core.user_info.read'
+
+    _customScopes = []
+    _adminCustomScopes = []
+
+    @classmethod
+    def describeScope(cls, scopeId, name, description, admin=False):
+        """
+        Register a description of a scope.
+
+        :param scopeId: The unique identifier string for the scope.
+        :type scopeId: str
+        :param name: A short human readable name for the scope.
+        :type name: str
+        :param description: A more complete description of the scope.
+        :type description: str
+        :param admin: If this scope only applies to admin users, set to True.
+        :type admin: bool
+        """
+        info = {
+            'id': scopeId,
+            'name': name,
+            'description': description
+        }
+        if admin:
+            cls._adminCustomScopes.append(info)
+        else:
+            cls._customScopes.append(info)
+
+    @classmethod
+    def listScopes(cls):
+        return {
+            'custom': cls._customScopes,
+            'adminCustom': cls._adminCustomScopes
+        }
+
+TokenScope.describeScope(
+    TokenScope.USER_INFO_READ, 'Read your user information',
+    'Allows clients to look up your user information, including private fields '
+    'such as email address.')
+TokenScope.describeScope(
+    TokenScope.DATA_READ, 'Read data',
+    'Allows clients to read all data that you have access to.')
+TokenScope.describeScope(
+    TokenScope.DATA_WRITE, 'Write data',
+    'Allows clients to edit data in the hierarchy and create new data anywhere '
+    'you have write access.')
+TokenScope.describeScope(
+    TokenScope.DATA_OWN, 'Data ownership', 'Allows administrative control '
+    'on data you own, including setting access control and deletion.'
+)
+
+TokenScope.describeScope(
+    TokenScope.PLUGINS_ENABLED_READ, 'See enabled plugins', 'Allows clients '
+    'to see the list of plugins enabled on the server.', admin=True)
+TokenScope.describeScope(
+    TokenScope.SETTINGS_READ, 'See system setting values', 'Allows clients to '
+    'view the value of any system setting.', admin=True)
+TokenScope.describeScope(
+    TokenScope.ASSETSTORES_READ, 'View assetstores', 'Allows clients to see '
+    'all assetstore information.', admin=True)
+TokenScope.describeScope(
+    TokenScope.PARTIAL_UPLOAD_READ, 'View unfinished uploads.',
+    'Allows clients to see all partial uploads.', admin=True)
+TokenScope.describeScope(
+    TokenScope.PARTIAL_UPLOAD_CLEAN, 'Remove unfinished uploads.',
+    'Allows clients to remove unfinished uploads.', admin=True)
+
+
+class CoreEventHandler(object):
+    """
+    This enum represents handler identifier strings for core event handlers.
+    If you wish to unbind a core event handler, use one of these as the
+    ``handlerName`` argument. Unbinding core event handlers can be used to
+    disable certain default functionalities.
+    """
+    # For removing deleted user/group references from AccessControlledModel
+    ACCESS_CONTROL_CLEANUP = 'core.cleanupDeletedEntity'
+
+    # For updating an item's size to include a new file.
+    FILE_PROPAGATE_SIZE = 'core.propagateSizeToItem'
+
+    # For adding a group's creator into its ACL at creation time.
+    GROUP_CREATOR_ACCESS = 'core.grantCreatorAccess'
+
+    # For creating the default Public and Private folders at user creation time.
+    USER_DEFAULT_FOLDERS = 'core.addDefaultFolders'
+
+    # For adding a user into its own ACL.
+    USER_SELF_ACCESS = 'core.grantSelfAccess'

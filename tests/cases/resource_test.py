@@ -21,13 +21,14 @@ import datetime
 import io
 import json
 import os
-import urllib
+import six
 import zipfile
 
 from .. import base
 
 import girder.utility.ziputil
 from girder.models.notification import ProgressState
+from six.moves import range, urllib
 
 
 def setUpModule():
@@ -76,13 +77,10 @@ class ResourceTestCase(base.TestCase):
             'creator': user
         }
         self.collection = self.model('collection').createCollection(**coll)
-        # Get the collection's folder
-        resp = self.request(
-            path='/folder', method='GET', user=user, params={
-                'parentType': 'collection',
-                'parentId': self.collection['_id'],
-            })
-        self.collectionPrivateFolder = resp.json[0]
+        self.collectionPrivateFolder = self.model('folder').createFolder(
+            parent=self.collection, parentType='collection', name='Private',
+            creator=user, public=False)
+
         # Get the admin user's folders
         resp = self.request(
             path='/folder', method='GET', user=user, params={
@@ -95,7 +93,7 @@ class ResourceTestCase(base.TestCase):
             resp.json[0]['_id'], user=user)
         self.adminPublicFolder = self.model('folder').load(
             resp.json[1]['_id'], user=user)
-        # Create a folder within the admin public forlder
+        # Create a folder within the admin public folder
         resp = self.request(
             path='/folder', method='POST', user=user, params={
                 'name': 'Folder 1', 'parentId': self.adminPublicFolder['_id']
@@ -108,7 +106,7 @@ class ResourceTestCase(base.TestCase):
         self.items.append(self.model('item').createItem(
             'Item 2', self.admin, self.adminPublicFolder))
         self.items.append(self.model('item').createItem(
-            'Item 3', self.admin, self.adminSubFolder))
+            'It\\em/3', self.admin, self.adminSubFolder))
         self.items.append(self.model('item').createItem(
             'Item 4', self.admin, self.collectionPrivateFolder))
         self.items.append(self.model('item').createItem(
@@ -132,7 +130,7 @@ class ResourceTestCase(base.TestCase):
         path = os.path.join(*([part['object'].get(
             'name', part['object'].get('login', '')) for part in parents] +
             [self.items[2]['name'], 'girder-item-metadata.json']))
-        self.expectedZip[path] = json.dumps(meta)
+        self.expectedZip[path] = meta
 
         meta = {'x': 'y'}
         self.model('item').setMetadata(self.items[4], meta)
@@ -140,7 +138,7 @@ class ResourceTestCase(base.TestCase):
         path = os.path.join(*([part['object'].get(
             'name', part['object'].get('login', '')) for part in parents] +
             [self.items[4]['name'], 'girder-item-metadata.json']))
-        self.expectedZip[path] = json.dumps(meta)
+        self.expectedZip[path] = meta
 
         meta = {'key2': 'value2', 'date': datetime.datetime.utcnow()}
         # mongo rounds to millisecond, so adjust our expectations
@@ -152,7 +150,7 @@ class ResourceTestCase(base.TestCase):
         path = os.path.join(*([part['object'].get(
             'name', part['object'].get('login', '')) for part in parents] +
             [self.adminPublicFolder['name'], 'girder-folder-metadata.json']))
-        self.expectedZip[path] = json.dumps(meta, default=str)
+        self.expectedZip[path] = meta
 
     def _uploadFile(self, name, item):
         """
@@ -227,12 +225,19 @@ class ResourceTestCase(base.TestCase):
             }, isJson=False)
         self.assertStatusOk(resp)
         self.assertEqual(resp.headers['Content-Type'], 'application/zip')
-        zip = zipfile.ZipFile(io.BytesIO(resp.collapse_body()), 'r')
+        zip = zipfile.ZipFile(io.BytesIO(self.getBody(resp, text=False)), 'r')
         self.assertTrue(zip.testzip() is None)
         self.assertHasKeys(self.expectedZip, zip.namelist())
         self.assertHasKeys(zip.namelist(), self.expectedZip)
         for name in zip.namelist():
-            self.assertEqual(self.expectedZip[name], zip.read(name))
+            expected = self.expectedZip[name]
+            if isinstance(expected, dict):
+                self.assertEqual(json.loads(zip.read(name).decode('utf8')),
+                                 json.loads(json.dumps(expected, default=str)))
+            else:
+                if not isinstance(expected, six.binary_type):
+                    expected = expected.encode('utf8')
+                self.assertEqual(expected, zip.read(name))
         # Download the same resources again, this time triggering the large zip
         # file creation (artifically forced).  We could do this naturally by
         # downloading >65536 files, but that would make the test take several
@@ -249,8 +254,9 @@ class ResourceTestCase(base.TestCase):
             additionalHeaders=[('X-HTTP-Method-Override', 'GET')])
         self.assertStatusOk(resp)
         self.assertEqual(resp.headers['Content-Type'], 'application/zip')
-        zip = zipfile.ZipFile(io.BytesIO(resp.collapse_body()), 'r')
+        zip = zipfile.ZipFile(io.BytesIO(self.getBody(resp, text=False)), 'r')
         self.assertTrue(zip.testzip() is None)
+
         # Test deleting resources
         resourceList = {
             'collection': [str(self.collection['_id'])],
@@ -279,7 +285,9 @@ class ResourceTestCase(base.TestCase):
             }
         resp = self.request(
             path='/resource', method='DELETE', user=self.admin,
-            body=urllib.urlencode({'resources': json.dumps(resourceList)}),
+            body=urllib.parse.urlencode({
+                'resources': json.dumps(resourceList)
+            }),
             type='application/x-www-form-urlencoded', isJson=False)
         self.assertStatusOk(resp)
         # Test deletes using POST and override method
@@ -297,6 +305,35 @@ class ResourceTestCase(base.TestCase):
                             params={'text': 'Item'})
         self.assertStatusOk(resp)
         self.assertEqual(len(resp.json), 0)
+
+        # Add a file under the admin private folder
+        item = self.model('item').createItem(
+            'Private Item', self.admin, self.adminPrivateFolder)
+        _, path, contents = self._uploadFile('private_file', item)
+        self.assertEqual(path, 'goodlogin/Private/Private Item/private_file')
+
+        # Download as admin, should get private file
+        resp = self.request(
+            path='/resource/download', method='GET', user=self.admin, params={
+                'resources': json.dumps({'user': [str(self.admin['_id'])]})
+            }, isJson=False)
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.headers['Content-Type'], 'application/zip')
+        zip = zipfile.ZipFile(io.BytesIO(self.getBody(resp, text=False)), 'r')
+        self.assertTrue(zip.testzip() is None)
+        self.assertEqual(zip.namelist(), [path])
+        self.assertEqual(zip.read(path), contents)
+
+        # Download as normal user, should get empty zip
+        resp = self.request(
+            path='/resource/download', method='GET', user=self.user, params={
+                'resources': json.dumps({'user': [str(self.admin['_id'])]})
+            }, isJson=False)
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.headers['Content-Type'], 'application/zip')
+        zip = zipfile.ZipFile(io.BytesIO(self.getBody(resp, text=False)), 'r')
+        self.assertTrue(zip.testzip() is None)
+        self.assertEqual(zip.namelist(), [])
 
     def testDeleteResources(self):
         # Some of the deletes were tested with the downloads.
@@ -327,18 +364,173 @@ class ResourceTestCase(base.TestCase):
 
     def testGetResourceById(self):
         self._createFiles()
-        resp = self.request(path='/resource/{}'.format(self.admin['_id']),
+        resp = self.request(path='/resource/%s' % self.admin['_id'],
                             method='GET', user=self.admin,
                             params={'type': 'user'})
         self.assertStatusOk(resp)
         self.assertEqual(str(resp.json['_id']), str(self.admin['_id']))
         self.assertEqual(resp.json['email'], 'good@email.com')
         # Get a file via this method
-        resp = self.request(path='/resource/{}'.format(self.file1['_id']),
+        resp = self.request(path='/resource/%s' % self.file1['_id'],
                             method='GET', user=self.admin,
                             params={'type': 'file'})
         self.assertStatusOk(resp)
         self.assertEqual(str(resp.json['_id']), str(self.file1['_id']))
+
+    def testGetResourceByPath(self):
+        self._createFiles()
+
+        # test users
+        resp = self.request(path='/resource/lookup',
+                            method='GET', user=self.admin,
+                            params={'path': '/user/goodlogin'})
+
+        self.assertStatusOk(resp)
+        self.assertEqual(str(resp.json['_id']), str(self.admin['_id']))
+
+        resp = self.request(path='/resource/lookup',
+                            method='GET', user=self.user,
+                            params={'path': '/user/userlogin'})
+        self.assertStatusOk(resp)
+        self.assertEqual(str(resp.json['_id']), str(self.user['_id']))
+
+        # test collections
+        resp = self.request(path='/resource/lookup',
+                            method='GET', user=self.user,
+                            params={'path': '/collection/Test Collection'})
+        self.assertStatusOk(resp)
+        self.assertEqual(str(resp.json['_id']), str(self.collection['_id']))
+
+        resp = self.request(path='/resource/lookup',
+                            method='GET', user=self.admin,
+                            params={'path':
+                                    '/collection/Test Collection/' +
+                                    self.collectionPrivateFolder['name']})
+        self.assertStatusOk(resp)
+        self.assertEqual(str(resp.json['_id']),
+                         str(self.collectionPrivateFolder['_id']))
+
+        # test folders
+        resp = self.request(path='/resource/lookup',
+                            method='GET', user=self.user,
+                            params={'path': '/user/goodlogin/Public'})
+        self.assertStatusOk(resp)
+        self.assertEqual(
+            str(resp.json['_id']), str(self.adminPublicFolder['_id']))
+
+        resp = self.request(path='/resource/lookup',
+                            method='GET', user=self.user,
+                            params={'path': '/user/goodlogin/Private'})
+        self.assertStatus(resp, 403)
+
+        # test subfolders
+        resp = self.request(path='/resource/lookup',
+                            method='GET', user=self.admin,
+                            params={'path': '/user/goodlogin/Public/Folder 1'})
+        self.assertStatusOk(resp)
+        self.assertEqual(
+            str(resp.json['_id']), str(self.adminSubFolder['_id']))
+
+        # test items
+        privateFolder = self.collectionPrivateFolder['name']
+        paths = ('/user/goodlogin/Public/Item 1',
+                 '/user/goodlogin/Public/Item 2',
+                 '/user/goodlogin/Public/Folder 1/It\\\\em\\/3',
+                 '/collection/Test Collection/%s/Item 4' % privateFolder,
+                 '/collection/Test Collection/%s/Item 5' % privateFolder)
+
+        users = (self.user,
+                 self.user,
+                 self.user,
+                 self.admin,
+                 self.admin)
+
+        for path, item, user in zip(paths, self.items, users):
+            resp = self.request(path='/resource/lookup',
+                                method='GET', user=user,
+                                params={'path': path})
+
+            self.assertStatusOk(resp)
+            self.assertEqual(
+                str(resp.json['_id']), str(item['_id']))
+
+        # test bogus path
+        # test is not set
+        resp = self.request(path='/resource/lookup',
+                            method='GET', user=self.user,
+                            params={'path': '/bogus/path'})
+        self.assertStatus(resp, 400)
+        # test is set to false, response code should be 400
+        resp = self.request(path='/resource/lookup',
+                            method='GET', user=self.user,
+                            params={'path': '/collection/bogus/path',
+                                    'test': False})
+        self.assertStatus(resp, 400)
+
+        # test is set to true, response code should be 200 and response body
+        # should be null (None)
+        resp = self.request(path='/resource/lookup',
+                            method='GET', user=self.user,
+                            params={'path': '/collection/bogus/path',
+                                    'test': True})
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json, None)
+
+    def testGetResourcePath(self):
+        self._createFiles()
+
+        # Get a user's path
+        resp = self.request(path='/resource/' + str(self.user['_id']) + '/path',
+                            method='GET', user=self.user,
+                            params={'type': 'user'})
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json, '/user/userlogin')
+
+        # Get a collection's path
+        resp = self.request(path='/resource/' + str(self.collection['_id']) + '/path',
+                            method='GET', user=self.user,
+                            params={'type': 'collection'})
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json, '/collection/Test Collection')
+
+        # Get a folder's path
+        resp = self.request(path='/resource/' + str(self.adminSubFolder['_id']) + '/path',
+                            method='GET', user=self.user,
+                            params={'type': 'folder'})
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json, '/user/goodlogin/Public/Folder 1')
+
+        # Get an item's path
+        resp = self.request(path='/resource/' + str(self.items[2]['_id']) + '/path',
+                            method='GET', user=self.user,
+                            params={'type': 'item'})
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json, '/user/goodlogin/Public/Folder 1/It\\\\em\\/3')
+
+        # Get a file's path
+        resp = self.request(path='/resource/' + str(self.file1['_id']) + '/path',
+                            method='GET', user=self.user,
+                            params={'type': 'file'})
+        self.assertStatusOk(resp)
+        self.assertEqual(resp.json, '/user/goodlogin/Public/Item 1/File 1')
+
+        # Test access denied response
+        resp = self.request(path='/resource/' + str(self.adminPrivateFolder['_id']) + '/path',
+                            method='GET', user=self.user,
+                            params={'type': 'folder'})
+        self.assertStatus(resp, 403)
+
+        # Test invalid id response
+        resp = self.request(path='/resource/' + str(self.user['_id']) + '/path',
+                            method='GET', user=self.user,
+                            params={'type': 'folder'})
+        self.assertStatus(resp, 400)
+
+        # Test invalid type response
+        resp = self.request(path='/resource/' + str(self.user['_id']) + '/path',
+                            method='GET', user=self.user,
+                            params={'type': 'invalid type'})
+        self.assertStatus(resp, 400)
 
     def testMove(self):
         self._createFiles()
@@ -352,7 +544,7 @@ class ResourceTestCase(base.TestCase):
                 'progress': True
             })
         self.assertStatusOk(resp)
-        resp = self.request(path='/item/{}'.format(self.items[0]['_id']),
+        resp = self.request(path='/item/%s' % self.items[0]['_id'],
                             method='GET', user=self.admin)
         self.assertStatusOk(resp)
         self.assertEqual(resp.json['folderId'],
@@ -388,13 +580,13 @@ class ResourceTestCase(base.TestCase):
                 'progress': True
             })
         self.assertStatusOk(resp)
-        resp = self.request(path='/item/{}'.format(self.items[0]['_id']),
+        resp = self.request(path='/item/%s' % self.items[0]['_id'],
                             method='GET', user=self.admin)
         self.assertStatusOk(resp)
         self.assertEqual(resp.json['folderId'],
                          str(self.adminPrivateFolder['_id']))
         resp = self.request(
-            path='/folder/{}'.format(self.adminSubFolder['_id']), method='GET',
+            path='/folder/%s' % self.adminSubFolder['_id'], method='GET',
             user=self.admin)
         self.assertStatusOk(resp)
         self.assertEqual(resp.json['parentId'],
@@ -421,7 +613,7 @@ class ResourceTestCase(base.TestCase):
             })
         self.assertStatusOk(resp)
         resp = self.request(
-            path='/folder/{}'.format(self.adminSubFolder['_id']), method='GET',
+            path='/folder/%s' % self.adminSubFolder['_id'], method='GET',
             user=self.admin)
         self.assertStatusOk(resp)
         self.assertEqual(resp.json['parentCollection'], 'user')
@@ -530,8 +722,11 @@ class ResourceTestCase(base.TestCase):
             chunk = '\0' * chunkSize
 
             def genEmptyData():
-                for val in xrange(0, fileLength, chunkSize):
-                    yield chunk
+                for val in range(0, fileLength, chunkSize):
+                    if fileLength - val < chunkSize:
+                        yield chunk[:fileLength - val]
+                    else:
+                        yield chunk
 
             return genEmptyData
 
@@ -543,5 +738,57 @@ class ResourceTestCase(base.TestCase):
         for data in zip.addFile(
                 genEmptyFile(6 * 1024 * 1024 * 1024), 'bigfile'):
             pass
+        # Add a second small file at the end to test some of the other Zip64
+        # code
+        for data in zip.addFile(genEmptyFile(100), 'smallfile'):
+            pass
+        # Test that we don't crash on Unicode file names
+        for data in zip.addFile(
+                genEmptyFile(100), u'\u0421\u0443\u043f\u0435\u0440-\u0440'
+                '\u0443\u0441\u0441\u043a\u0438, \u0627\u0633\u0645 \u0627'
+                '\u0644\u0645\u0644\u0641 \u0628\u0627\u0644\u0644\u063a'
+                '\u0629 \u0627\u0644\u0639\u0631\u0628\u064a\u0629'):
+            pass
+        # Test filename with a null
+        for data in zip.addFile(genEmptyFile(100), 'with\x00null'):
+            pass
         footer = zip.footer()
-        self.assertEqual(footer[-6:], '\xFF\xFF\xFF\xFF\x00\x00')
+        self.assertEqual(footer[-6:], b'\xFF\xFF\xFF\xFF\x00\x00')
+
+    def testResourceTimestamps(self):
+        self._createFiles()
+
+        created = datetime.datetime(2000, 1, 1)
+        updated = datetime.datetime(2001, 1, 1)
+
+        # non-admin cannot use this endpoint
+        resp = self.request(
+            path='/resource/%s/timestamp' % self.collection['_id'],
+            method='PUT',
+            user=self.user,
+            params={
+                'type': 'collection',
+                'created': str(created),
+                'updated': str(updated),
+            })
+        self.assertStatus(resp, 403)
+
+        c = self.model('collection').load(self.collection['_id'], force=True)
+        self.assertNotEqual(c['created'], created)
+        self.assertNotEqual(c['updated'], updated)
+
+        # admin can change created timestamp
+        resp = self.request(
+            path='/resource/%s/timestamp' % self.collection['_id'],
+            method='PUT',
+            user=self.admin,
+            params={
+                'type': 'collection',
+                'created': str(created),
+                'updated': str(updated),
+            })
+        self.assertStatusOk(resp)
+
+        c = self.model('collection').load(self.collection['_id'], force=True)
+        self.assertEqual(c['created'], created)
+        self.assertEqual(c['updated'], updated)

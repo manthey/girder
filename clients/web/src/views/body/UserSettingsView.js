@@ -59,10 +59,19 @@ girder.views.UserAccountView = girder.View.extend({
                             timeout: 4000
                         });
                         this.$('#g-password-old,#g-password-new,#g-password-retype').val('');
-                    }, this).changePassword(
-                        this.$('#g-password-old').val(),
-                        this.$('#g-password-new').val()
-                    );
+                    }, this);
+
+            // here and in the template, an admin user who wants to change their
+            //   own password is intentionally forced to re-enter their old
+            //   password
+            if (this.isCurrentUser) {
+                this.user.changePassword(
+                    this.$('#g-password-old').val(),
+                    this.$('#g-password-new').val()
+                );
+            } else {
+                this.user.adminChangePassword(this.$('#g-password-new').val());
+            }
         }
     },
 
@@ -70,22 +79,24 @@ girder.views.UserAccountView = girder.View.extend({
         this.tab = settings.tab || 'info';
         this.user = settings.user || girder.currentUser;
         this.isCurrentUser = girder.currentUser &&
-            settings.user.get('_id') === girder.currentUser.get('_id');
+            settings.user.id === girder.currentUser.id;
 
         this.model = this.user;
         this.temporary = settings.temporary;
 
-        if (!this.user ||
-                this.user.getAccessLevel() < girder.AccessType.WRITE) {
+        if (!this.user || this.user.getAccessLevel() < girder.AccessType.WRITE) {
             girder.router.navigate('users', {trigger: true});
             return;
         }
 
         girder.cancelRestRequests('fetch');
-        this.render();
 
-        // This page should be re-rendered if the user logs in or out
-        girder.events.on('g:login', this.userChanged, this);
+        this.apiKeyListWidget = new girder.views.ApiKeyListWidget({
+            user: this.user,
+            parentView: this
+        });
+
+        this.render();
     },
 
     render: function () {
@@ -96,18 +107,22 @@ girder.views.UserAccountView = girder.View.extend({
 
         this.$el.html(girder.templates.userSettings({
             user: this.model,
+            isCurrentUser: this.isCurrentUser,
             girder: girder,
             temporaryToken: this.temporary
         }));
 
         _.each($('.g-account-tabs>li>a'), function (el) {
             var tabLink = $(el);
-            var view = this;
-            tabLink.tab().on('shown.bs.tab', function (e) {
-                view.tab = $(e.currentTarget).attr('name');
-                girder.router.navigate('useraccount/' +
-                    view.model.get('_id') + '/' + view.tab);
-            });
+            tabLink.tab().on('shown.bs.tab', _.bind(function (e) {
+                this.tab = $(e.currentTarget).attr('name');
+                girder.router.navigate('useraccount/' + this.model.id + '/' + this.tab);
+
+                if (this.tab === 'apikeys') {
+                    this.apiKeyListWidget.setElement(
+                        this.$('.g-api-keys-list-container')).render();
+                }
+            }, this));
 
             if (tabLink.attr('name') === this.tab) {
                 tabLink.tab('show');
@@ -115,18 +130,6 @@ girder.views.UserAccountView = girder.View.extend({
         }, this);
 
         return this;
-    },
-
-    userChanged: function () {
-        // When the user changes, we should refresh the model to update the
-        // _accessLevel attribute on the viewed user, then re-render the page.
-        this.model.off('g:fetched').on('g:fetched', function () {
-            this.render();
-        }, this).on('g:error', function () {
-            // Current user no longer has write access to this user, so we
-            // send them back to the user list page.
-            girder.router.navigate('users', {trigger: true});
-        }, this).fetch();
     }
 });
 
@@ -161,7 +164,39 @@ girder.router.route('useraccount/:id/token/:token', 'accountToken', function (id
             tab: 'password',
             temporary: token
         });
-    }, this)).error(_.bind(function (err) {
+    }, this)).error(_.bind(function () {
         girder.router.navigate('users', {trigger: true});
+    }, this));
+});
+
+girder.router.route('useraccount/:id/verification/:token', 'accountVerify', function (id, token) {
+    girder.restRequest({
+        path: 'user/' + id + '/verification',
+        type: 'PUT',
+        data: {token: token},
+        error: null
+    }).done(_.bind(function (resp) {
+        if (resp.authToken) {
+            resp.user.token = resp.authToken.token;
+            girder.eventStream.close();
+            girder.currentUser = new girder.models.UserModel(resp.user);
+            girder.eventStream.open();
+            girder.events.trigger('g:login-changed');
+        }
+        girder.events.trigger('g:navigateTo', girder.views.FrontPageView);
+        girder.events.trigger('g:alert', {
+            icon: 'ok',
+            text: 'Email verified.',
+            type: 'success',
+            timeout: 4000
+        });
+    }, this)).error(_.bind(function () {
+        girder.events.trigger('g:navigateTo', girder.views.FrontPageView);
+        girder.events.trigger('g:alert', {
+            icon: 'cancel',
+            text: 'Could not verify email.',
+            type: 'danger',
+            timeout: 4000
+        });
     }, this));
 });

@@ -4,7 +4,7 @@
 **Data Management Platform**
 
 Documentation of the Girder platform can be found at
-https://girder.readthedocs.org.
+https://girder.readthedocs.io.
 
 For questions, comments, or to get in touch with the maintainers, head to our `Gitter Forum
 <https://gitter.im/girder/girder>`_.
@@ -21,7 +21,7 @@ We'd love for you to `contribute to Girder <CONTRIBUTING.md>`_.
     :target: https://girder.readthedocs.org
     :alt: Documentation Status
 
-.. |license-badge| image:: https://pypip.in/license/girder/badge.png
+.. |license-badge| image:: docs/license.png
     :target: https://pypi.python.org/pypi/girder
     :alt: License
 

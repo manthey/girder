@@ -1,16 +1,15 @@
 (function () {
-
     /**
      * This view shows a single user's page.
      */
     girder.views.UserView = girder.View.extend({
         events: {
-            'click a.g-edit-user': function (event) {
+            'click a.g-edit-user': function () {
                 var editUrl = 'useraccount/' + this.model.get('_id') + '/info';
                 girder.router.navigate(editUrl, {trigger: true});
             },
 
-            'click a.g-delete-user': function (event) {
+            'click a.g-delete-user': function () {
                 girder.confirm({
                     text: 'Are you sure you want to delete the user <b>' +
                           this.model.escape('login') + '</b>?',
@@ -22,6 +21,21 @@
                         });
                     }, this)
                 });
+            },
+
+            'click a.g-approve-user': function () {
+                this._setAndSave(
+                    {status: 'enabled'}, 'Approved user account.');
+            },
+
+            'click a.g-disable-user': function () {
+                this._setAndSave(
+                    {status: 'disabled'}, 'Disabled user account.');
+            },
+
+            'click a.g-enable-user': function () {
+                this._setAndSave(
+                    {status: 'enabled'}, 'Enabled user account.');
             }
         },
 
@@ -92,6 +106,25 @@
             this.itemCreate = false;
 
             return this;
+        },
+
+        _setAndSave: function (data, message) {
+            this.model.set(data);
+            this.model.off('g:saved').on('g:saved', function () {
+                girder.events.trigger('g:alert', {
+                    icon: 'ok',
+                    text: message,
+                    type: 'success',
+                    timeout: 4000
+                });
+                this.render();
+            }, this).off('g:error').on('g:error', function (err) {
+                girder.events.trigger('g:alert', {
+                    icon: 'cancel',
+                    text: err.responseJSON.message,
+                    type: 'danger'
+                });
+            }).save();
         }
     });
 
@@ -129,5 +162,4 @@
             itemCreate: params.dialog === 'itemcreate'
         });
     });
-
 }());

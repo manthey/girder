@@ -1,14 +1,7 @@
 /**
  * Start the girder backbone app.
  */
-$(function () {
-    girder.events.trigger('g:appload.before');
-    var app = new girder.App({
-        el: 'body',
-        parentView: null
-    });
-    girder.events.trigger('g:appload.after');
-});
+girderTest.startApp();
 
 /* Search for a name on the members search panel, and invite or add the first
  * found user as a member, moderator, or admin.
@@ -21,14 +14,17 @@ $(function () {
  */
 function _invite(name, level, action, check) {
     // Search for the named user in user search box
+    waitsFor(function () {
+        return $('.g-group-invite-container input.g-search-field').length > 0;
+    }, 'search field widget to render');
+
     runs(function () {
-        $('.g-group-invite-container input.g-search-field')
-            .val(name).trigger('input');
+        $('.g-group-invite-container input.g-search-field').val(name).trigger('input');
     });
     girderTest.waitForLoad();
     waitsFor(function () {
         return $('.g-group-invite-container .g-search-results').hasClass('open');
-    }, 'search to return');
+    }, 'search to return (' + name + ')');
     runs(function () {
         var results = $('.g-group-invite-container li.g-search-result');
         expect(results.length).toBe(1);
@@ -77,8 +73,8 @@ function _invite(name, level, action, check) {
  * @param curSetting: the current policy setting.
  */
 function _testDirectAdd(policy, curUser, curSetting) {
-    if (curSetting != policy.setting) {
-        if (curUser != 'admin') {
+    if (curSetting !== policy.setting) {
+        if (curUser !== 'admin') {
             girderTest.logout()();
             girderTest.login('admin', 'Admin', 'Admin',
                              'adminpassword!')();
@@ -114,7 +110,7 @@ function _testDirectAdd(policy, curUser, curSetting) {
             }, 'the group page to load');
         }
     }
-    if (curUser != policy.user) {
+    if (curUser !== policy.user) {
         girderTest.logout()();
         if (policy.user === 'admin') {
             girderTest.login('admin', 'Admin', 'Admin',
@@ -125,7 +121,22 @@ function _testDirectAdd(policy, curUser, curSetting) {
                 'password!')();
         }
         curUser = policy.user;
-    }
+        // go back to the groups page since we've logged out
+        girderTest.goToGroupsPage()();
+        waitsFor(function () {
+            return $('.g-group-list-entry').length >= 1 &&
+                   $('.g-group-list-entry:contains("pubGroup") .g-group-link').length === 1;
+        }, 'the public groups to show up');
+        runs(function () {
+            $('.g-group-list-entry:contains("pubGroup") .g-group-link').click();
+        });
+        waitsFor(function () {
+            return $('.g-group-name').text() === 'pubGroup' &&
+                   $('.g-group-members>li').length === 1 &&
+                   $('.g-group-mods>li').length === 1 &&
+                   $('.g-group-admins>li').length === 2;
+        }, 'the group page to load');
+     }
     /* If the invite search field exists or we think it should,
      * test that the add button exists as we expect */
     if (policy.mayAdd === null) {
@@ -157,6 +168,11 @@ describe('Test group actions', function () {
 
     it('Create a private group',
        girderTest.createGroup('privGroup', 'private group', false));
+
+    it('Test that anonymous loading private group prompts login', function () {
+        var privateGroupFragment = Backbone.history.fragment;
+        girderTest.anonymousLoadPage(true, privateGroupFragment, true, girderTest.login('admin', 'Admin', 'Admin', 'adminpassword!'));
+    });
 
     it('go back to groups page', girderTest.goToGroupsPage());
 
@@ -223,7 +239,24 @@ describe('Test group actions', function () {
         }, 'admin user to appear in the member list');
     });
 
+    it('check that logging out of a group redirects to the front page', function () {
+        girderTest.logout()();
+        waitsFor(function () {
+            return $('.g-frontpage-title:visible').length > 0;
+        }, 'front page to display');
+    });
+
+    it('check that logging out of the groups list page redirects to the front page', function () {
+        girderTest.login('admin', 'Admin', 'Admin', 'adminpassword!')();
+        girderTest.goToGroupsPage()();
+        girderTest.logout()();
+        waitsFor(function () {
+            return $('.g-frontpage-title:visible').length > 0;
+        }, 'front page to display');
+    });
+
     it('check that the groups page has both groups for admin', function () {
+        girderTest.login('admin', 'Admin', 'Admin', 'adminpassword!')();
         girderTest.goToGroupsPage()();
         waitsFor(function () {
             return $('.g-group-list-entry').length === 2;
@@ -239,6 +272,7 @@ describe('Test group actions', function () {
 
     it('check that the groups page has only the public groups for anon', function () {
         girderTest.logout()();
+        girderTest.goToGroupsPage()();
         waitsFor(function () {
             return $('.g-group-list-entry').length === 1;
         }, 'the two groups to show up');

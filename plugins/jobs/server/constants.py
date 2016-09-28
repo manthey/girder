@@ -17,11 +17,13 @@
 #  limitations under the License.
 ###############################################################################
 
-
+from girder import events
 from girder.models.notification import ProgressState
 
+JOB_HANDLER_LOCAL = 'jobs._local'
 
-# Constants representing the setting keys for this plugin
+
+# integer enum describing job states. Note, no order is implied.
 class JobStatus(object):
     INACTIVE = 0
     QUEUED = 1
@@ -32,6 +34,11 @@ class JobStatus(object):
 
     @staticmethod
     def isValid(status):
+        event = events.trigger('jobs.status.validate', info=status)
+
+        if event.defaultPrevented and len(event.responses):
+            return event.responses[-1]
+
         return status in (JobStatus.INACTIVE, JobStatus.QUEUED,
                           JobStatus.RUNNING, JobStatus.SUCCESS, JobStatus.ERROR,
                           JobStatus.CANCELED)

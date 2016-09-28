@@ -48,13 +48,13 @@ class NotificationTestCase(base.TestCase):
         self.assertStatus(resp, 401)
         self.assertEqual(
             resp.json['message'],
-            'You must be logged in or supply a valid session token.')
+            'You must be logged in or have a valid auth token.')
 
         resp = self.request(path='/notification/stream', method='GET',
                             user=user, token=token, isJson=False,
                             params={'timeout': 0})
         self.assertStatusOk(resp)
-        self.assertEqual(resp.collapse_body(), '')
+        self.assertEqual(self.getBody(resp), '')
 
         # Use a very high rate-limit interval so that we don't fail on slow
         # build boxes

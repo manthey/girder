@@ -26,12 +26,13 @@ import logging
 import os
 import shutil
 import signal
+import six
 import sys
 import unittest
-import urllib
 import uuid
 
-from StringIO import StringIO
+from six import BytesIO
+from six.moves import urllib
 from girder.utility import model_importer
 from girder.utility.server import setup as setupServer
 from girder.constants import AccessType, ROOT_DIR, SettingKey
@@ -93,16 +94,14 @@ def dropTestDatabase(dropModels=True):
     """
     db_connection = getDbConnection()
 
-    if dropModels:
-        # Must clear the models to rebuild indices
-        model_importer.clearModels()
-
     dbName = cherrypy.config['database']['uri'].split('/')[-1]
 
     if 'girder_test_' not in dbName:
-        raise Exception('Expected a testing database name, but got {}'
-                        .format(dbName))
+        raise Exception('Expected a testing database name, but got %s' % dbName)
     db_connection.drop_database(dbName)
+
+    if dropModels:
+        model_importer.reinitializeAll()
 
 
 def dropGridFSDatabase(dbName):
@@ -139,17 +138,18 @@ class TestCase(unittest.TestCase, model_importer.ModelImporter):
         """
         self.assetstoreType = assetstoreType
         dropTestDatabase(dropModels=dropModels)
+        assetstoreName = os.environ.get('GIRDER_TEST_ASSETSTORE', 'test')
         assetstorePath = os.path.join(
-            ROOT_DIR, 'tests', 'assetstore',
-            os.environ.get('GIRDER_TEST_ASSETSTORE', 'test'))
+            ROOT_DIR, 'tests', 'assetstore', assetstoreName)
         if assetstoreType == 'gridfs':
-            gridfsDbName = os.environ.get('GIRDER_TEST_ASSETSTORE',
-                                          'gridfs_assetstore_test')
+            # Name this as '_auto' to prevent conflict with assetstores created
+            # within test methods
+            gridfsDbName = 'girder_test_%s_assetstore_auto' % assetstoreName
             dropGridFSDatabase(gridfsDbName)
             self.assetstore = self.model('assetstore'). \
                 createGridFsAssetstore(name='Test', db=gridfsDbName)
         elif assetstoreType == 'gridfsrs':
-            gridfsDbName = 'gridfsrs_assetstore_test'
+            gridfsDbName = 'girder_test_%s_rs_assetstore_auto' % assetstoreName
             mongo_replicaset.startMongoReplicaSet()
             self.assetstore = self.model('assetstore'). \
                 createGridFsAssetstore(
@@ -175,7 +175,8 @@ class TestCase(unittest.TestCase, model_importer.ModelImporter):
         """
         Stop any services that we started just for this test.
         """
-        if self.assetstoreType == 'gridfsrs':
+        # If "self.setUp" is overridden, "self.assetstoreType" may not be set
+        if getattr(self, 'assetstoreType', None) == 'gridfsrs':
             mongo_replicaset.stopMongoReplicaSet()
 
     def assertStatusOk(self, response):
@@ -195,8 +196,17 @@ class TestCase(unittest.TestCase, model_importer.ModelImporter):
         :type code: int or str
         """
         code = str(code)
-        msg = 'Response status was %s, not %s.' % (response.output_status, code)
-        self.assertTrue(response.output_status.startswith(code), msg)
+
+        if not response.output_status.startswith(code.encode()):
+            msg = 'Response status was %s, not %s.' % (response.output_status,
+                                                       code)
+
+            if hasattr(response, 'json'):
+                msg += ' Response body was:\n%s' % json.dumps(
+                    response.json, sort_keys=True, indent=4,
+                    separators=(',', ': '))
+
+            self.fail(msg)
 
     def assertHasKeys(self, obj, keys):
         """
@@ -204,7 +214,7 @@ class TestCase(unittest.TestCase, model_importer.ModelImporter):
 
         :param obj: The dictionary object.
         :param keys: The keys it must contain.
-        :type keys: list
+        :type keys: list or tuple
         """
         for k in keys:
             self.assertTrue(k in obj, 'Object does not contain key "%s"' % k)
@@ -232,7 +242,7 @@ class TestCase(unittest.TestCase, model_importer.ModelImporter):
 
         :param obj: The dictionary object.
         :param keys: The keys it must not contain.
-        :type keys: list
+        :type keys: list or tuple
         """
         for k in keys:
             self.assertFalse(k in obj, 'Object contains key "%s"' % k)
@@ -278,10 +288,56 @@ class TestCase(unittest.TestCase, model_importer.ModelImporter):
         self.assertStatus(response, 400)
 
     def getSseMessages(self, resp):
-        messages = resp.collapse_body().strip().split('\n\n')
+        messages = self.getBody(resp).strip().split('\n\n')
         if not messages or messages == ['']:
             return ()
-        return map(lambda m: json.loads(m.replace('data: ', '')), messages)
+        return [json.loads(m.replace('data: ', '')) for m in messages]
+
+    def uploadFile(self, name, contents, user, parent, parentType='folder',
+                   mimeType=None):
+        """
+        Upload a file. This is meant for small testing files, not very large
+        files that should be sent in multiple chunks.
+
+        :param name: The name of the file.
+        :type name: str
+        :param contents: The file contents
+        :type contents: str
+        :param user: The user performing the upload.
+        :type user: dict
+        :param parent: The parent document.
+        :type parent: dict
+        :param parentType: The type of the parent ("folder" or "item")
+        :type parentType: str
+        :param mimeType: Explicit MIME type to set on the file.
+        :type mimeType: str
+        :returns: The file that was created.
+        :rtype: dict
+        """
+        mimeType = mimeType or 'application/octet-stream'
+        resp = self.request(
+            path='/file', method='POST', user=user, params={
+                'parentType': parentType,
+                'parentId': str(parent['_id']),
+                'name': name,
+                'size': len(contents),
+                'mimeType': mimeType
+            })
+        self.assertStatusOk(resp)
+
+        fields = [('offset', 0), ('uploadId', resp.json['_id'])]
+        files = [('chunk', name, contents)]
+        resp = self.multipartRequest(
+            path='/file/chunk', user=user, fields=fields, files=files)
+        self.assertStatusOk(resp)
+
+        file = resp.json
+        self.assertHasKeys(file, ['itemId'])
+        self.assertEqual(file['name'], name)
+        self.assertEqual(file['size'], len(contents))
+        self.assertEqual(file['mimeType'], mimeType)
+
+        return self.model('file').load(file['_id'], force=True)
 
     def ensureRequiredParams(self, path='/', method='GET', required=(),
                              user=None):
@@ -306,7 +362,8 @@ class TestCase(unittest.TestCase, model_importer.ModelImporter):
         token = self.model('token').createToken(user)
         return str(token['_id'])
 
-    def _buildHeaders(self, headers, cookie, user, token, basicAuth):
+    def _buildHeaders(self, headers, cookie, user, token, basicAuth,
+                      authHeader):
         if cookie is not None:
             headers.append(('Cookie', cookie))
 
@@ -319,13 +376,14 @@ class TestCase(unittest.TestCase, model_importer.ModelImporter):
                 headers.append(('Girder-Token', token))
 
         if basicAuth is not None:
-            auth = base64.b64encode(basicAuth)
-            headers.append(('Authorization', 'Basic {}'.format(auth)))
+            auth = base64.b64encode(basicAuth.encode('utf8'))
+            headers.append((authHeader, 'Basic %s' % auth.decode()))
 
     def request(self, path='/', method='GET', params=None, user=None,
                 prefix='/api/v1', isJson=True, basicAuth=None, body=None,
                 type=None, exception=False, cookie=None, token=None,
-                additionalHeaders=None, useHttps=False):
+                additionalHeaders=None, useHttps=False,
+                authHeader='Girder-Authorization'):
         """
         Make an HTTP request.
 
@@ -344,10 +402,12 @@ class TestCase(unittest.TestCase, model_importer.ModelImporter):
         :param token: If you want to use an existing token to login, pass
             the token ID.
         :type token: str
-        :param additionalHeaders: a list of headers to add to the
+        :param additionalHeaders: A list of headers to add to the
                                   request.  Each item is a tuple of the form
                                   (header-name, header-value).
-        :param useHttps: if True, pretend to use https
+        :param useHttps: If True, pretend to use HTTPS.
+        :param authHeader: The HTTP request header to use for authentication.
+        :type authHeader: str
         :returns: The cherrypy response object from the request.
         """
         if not params:
@@ -359,7 +419,9 @@ class TestCase(unittest.TestCase, model_importer.ModelImporter):
         if additionalHeaders:
             headers.extend(additionalHeaders)
         if method in ['POST', 'PUT', 'PATCH'] or body:
-            qs = urllib.urlencode(params)
+            if isinstance(body, six.string_types):
+                body = body.encode('utf8')
+            qs = urllib.parse.urlencode(params).encode('utf8')
             if type is None:
                 headers.append(('Content-Type',
                                 'application/x-www-form-urlencoded'))
@@ -367,36 +429,59 @@ class TestCase(unittest.TestCase, model_importer.ModelImporter):
                 headers.append(('Content-Type', type))
                 qs = body
             headers.append(('Content-Length', '%d' % len(qs)))
-            fd = StringIO(qs)
+            fd = BytesIO(qs)
             qs = None
         elif params:
-            qs = urllib.urlencode(params)
+            qs = urllib.parse.urlencode(params)
 
         app = cherrypy.tree.apps['']
         request, response = app.get_serving(
             local, remote, 'http' if not useHttps else 'https', 'HTTP/1.1')
         request.show_tracebacks = True
 
-        self._buildHeaders(headers, cookie, user, token, basicAuth)
+        self._buildHeaders(headers, cookie, user, token, basicAuth, authHeader)
 
+        # Python2 will not match Unicode URLs
+        url = str(prefix + path)
         try:
-            response = request.run(method, prefix + path, qs, 'HTTP/1.1',
-                                   headers, fd)
+            response = request.run(method, url, qs, 'HTTP/1.1', headers, fd)
         finally:
             if fd:
                 fd.close()
 
         if isJson:
+            body = self.getBody(response)
             try:
-                response.json = json.loads(response.collapse_body())
+                response.json = json.loads(body)
             except Exception:
-                print response.collapse_body()
+                print(url)
+                print(body)
                 raise AssertionError('Did not receive JSON response')
 
-        if not exception and response.output_status.startswith('500'):
-            raise AssertionError("Internal server error: %s" % response.body)
+        if not exception and response.output_status.startswith(b'500'):
+            raise AssertionError("Internal server error: %s" %
+                                 self.getBody(response))
 
         return response
+
+    def getBody(self, response, text=True):
+        """
+        Returns the response body as a text type or binary string.
+
+        :param response: The response object from the server.
+        :param text: If true, treat the data as a text string, otherwise, treat
+                     as binary.
+        """
+        data = '' if text else b''
+
+        for chunk in response.body:
+            if text and isinstance(chunk, six.binary_type):
+                chunk = chunk.decode('utf8')
+            elif not text and not isinstance(chunk, six.binary_type):
+                chunk = chunk.encode('utf8')
+            data += chunk
+
+        return data
 
     def multipartRequest(self, fields, files, path, method='POST', user=None,
                          prefix='/api/v1', isJson=True):
@@ -430,21 +515,24 @@ class TestCase(unittest.TestCase, model_importer.ModelImporter):
             headers.append(('Girder-Token', self._genToken(user)))
 
         fd = io.BytesIO(body)
+        # Python2 will not match Unicode URLs
+        url = str(prefix + path)
         try:
-            response = request.run(method, prefix + path, None, 'HTTP/1.1',
-                                   headers, fd)
+            response = request.run(method, url, None, 'HTTP/1.1', headers, fd)
         finally:
             fd.close()
 
         if isJson:
+            body = self.getBody(response)
             try:
-                response.json = json.loads(response.collapse_body())
+                response.json = json.loads(body)
             except Exception:
-                print response.collapse_body()
+                print(body)
                 raise AssertionError('Did not receive JSON response')
 
-        if response.output_status.startswith('500'):
-            raise AssertionError("Internal server error: %s" % response.body)
+        if response.output_status.startswith(b'500'):
+            raise AssertionError("Internal server error: %s" %
+                                 self.getBody(response))
 
         return response
 
@@ -459,7 +547,7 @@ class MultipartFormdataEncoder(object):
     def __init__(self):
         self.boundary = uuid.uuid4().hex
         self.contentType = \
-            'multipart/form-data; boundary={}'.format(self.boundary)
+            'multipart/form-data; boundary=%s' % self.boundary
 
     @classmethod
     def u(cls, s):
@@ -473,9 +561,9 @@ class MultipartFormdataEncoder(object):
         encoder = codecs.getencoder('utf-8')
         for (key, value) in fields:
             key = self.u(key)
-            yield encoder('--{}\r\n'.format(self.boundary))
+            yield encoder('--%s\r\n' % self.boundary)
             yield encoder(self.u('Content-Disposition: form-data; '
-                                 'name="{}"\r\n').format(key))
+                                 'name="%s"\r\n') % key)
             yield encoder('\r\n')
             if isinstance(value, int) or isinstance(value, float):
                 value = str(value)
@@ -484,27 +572,29 @@ class MultipartFormdataEncoder(object):
         for (key, filename, content) in files:
             key = self.u(key)
             filename = self.u(filename)
-            yield encoder('--{}\r\n'.format(self.boundary))
-            yield encoder(self.u('Content-Disposition: form-data; name="{}";'
-                          ' filename="{}"\r\n').format(key, filename))
+            yield encoder('--%s\r\n' % self.boundary)
+            yield encoder(self.u('Content-Disposition: form-data; name="%s";'
+                          ' filename="%s"\r\n' % (key, filename)))
             yield encoder('Content-Type: application/octet-stream\r\n')
             yield encoder('\r\n')
 
             yield (content, len(content))
             yield encoder('\r\n')
-        yield encoder('--{}--\r\n'.format(self.boundary))
+        yield encoder('--%s--\r\n' % self.boundary)
 
     def encode(self, fields, files):
         body = io.BytesIO()
         size = 0
         for chunk, chunkLen in self.iter(fields, files):
+            if not isinstance(chunk, six.binary_type):
+                chunk = chunk.encode('utf8')
             body.write(chunk)
             size += chunkLen
         return self.contentType, body.getvalue(), size
 
 
 def _sigintHandler(*args):
-    print 'Received SIGINT, shutting down mock SMTP server...'
+    print('Received SIGINT, shutting down mock SMTP server...')
     mockSmtp.stop()
     sys.exit(1)
 

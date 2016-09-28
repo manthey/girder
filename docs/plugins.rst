@@ -9,6 +9,9 @@ their own plugins should see the :ref:`Plugin Development <plugindevelopment>` s
 a listing and brief documentation of some of Girder's standard plugins that come
 pre-packaged with the application.
 
+
+.. _jobsplugin:
+
 Jobs
 -----------
 
@@ -39,22 +42,42 @@ plugins that are in charge of actually scheduling a job for execution should the
 call ``scheduleJob``, which triggers the ``jobs.schedule`` event with the job
 document as the event info.
 
-For controlling what fields of a job are visible in the REST API, downstream plugins
-should bind to the ``jobs.filter`` event, which receives a dictionary with ``job``
-and ``user`` keys as its info. They can modify any existing fields or the job
-document as needed, and can also expose or redact fields. To make some fields
-visible while redacting others, you can use the event response with ``exposeFields``
-and/or ``removeFields`` keys, e.g.
+The jobs plugin contains several built-in status codes within the
+``girder.plugins.jobs.constants.JobStatus`` namespace. These codes represent
+various states a job can be in, which are:
+
+- INACTIVE (0)
+- QUEUED (1)
+- RUNNING (2)
+- SUCCESS (3)
+- ERROR (4)
+- CANCELED (5)
+
+Downstream plugins that wish to expose their own custom job statuses must hook
+into the ``jobs.status.validate`` event for any new valid status value, which by convention
+must be integer values. To validate a status code, the default must be prevented
+on the event, and the handler must add a ``True`` response to the event. For example, a
+downstream plugin with a custom job status with the value *1234* would add the following hook:
 
 .. code-block:: python
 
-  def filterJob(event):
-      event.addResponse({
-          'exposeFields': ['_some_other_field'],
-          'removeFields': ['created']
-      })
+    from girder import events
 
-  events.bind('jobs.filter', 'a_downstream_plugin', filterJob)
+    def validateJobStatus(event):
+        if event.info == 1234:
+            event.preventDefault().addResponse(True)
+
+    def load(info):
+        events.bind('jobs.status.validate', 'my_plugin', validateJobStatus):
+
+Downstream plugins that want to hook into job updates must use a different convention than normal;
+for the sake of optimizing data transfer, job updates do not occur using the normal ``save`` method
+of Girder models. Therefore, plugins that want to listen to job updates should bind to either
+``jobs.job.update`` (which is triggered prior to persisting the updates and can be used to prevent
+the update) or ``jobs.job.update.after`` (which is triggered after the update). Users of these events
+should be aware that the ``log`` field of the job will not necessarily be in sync with the persisted
+version, so if your event handler requires access to the job log, you should manually re-fetch the
+full document in the handler.
 
 
 Geospatial
@@ -71,9 +94,10 @@ GeoJSON properties of the features are added to the created items as metadata.
 The plugin requires the `geojson <https://pypi.python.org/pypi/geojson/>`__
 Python package, which may be installed using **pip**: ::
 
-    pip install -r plugins/geospatial/requirements.txt
+    pip install -e .[geospatial]
 
 Once the package is installed, the plugin may be enabled via the admin console.
+
 
 Google Analytics
 ----------------
@@ -86,6 +110,29 @@ it does not technically trigger routing events for hierarchy navigation).
 
 To use this plugin, simply copy your tracking ID from Google Analytics into the
 plugin configuration page.
+
+
+Homepage
+--------
+
+The Homepage plugin allows the default Girder front page to be replaced by
+content written in [Markdown](https://daringfireball.net/projects/markdown/)
+format. After enabling this plugin, visit the plugin configuration page
+to edit and preview the Markdown.
+
+
+Auto Join
+---------
+
+The Auto Join plugin allows you to define rules to automatically assign new
+users to groups based on their email address domain. Typically, this is used in
+conjunction with email verification.
+
+When a new user registers, each auto join rule is checked to see if the user's
+email address contains the rule pattern as a substring (case insensitive).
+
+If there is a match, the user is added to the group with the specified access
+level.
 
 
 Metadata Extractor
@@ -102,18 +149,13 @@ The server-side plugin requires several `Hachoir <https://bitbucket.org/haypo/ha
 Python packages to parse files and extract metadata from them. These packages
 may be installed using **pip** as follows: ::
 
-    pip install -r plugins/metadata_extractor/requirements.txt
+    pip install -e .[metadata_extractor]
 
 Once the packages are installed, the plugin may be enabled via the admin
 console on the server.
 
-The remote client requires the same Python packages as the server plugin, but
-additionally requires the `Requests <http://docs.python-requests.org/en/latest>`_ Python
-package to communicate with the server using the Girder Python client. These
-packages may be installed using **pip** as follows: ::
-
-    pip install requests -r plugins/metadata_extractor/requirements.txt
-
+In this example, we use the girder :doc:`python client <python-client>` to
+interact with the plugin's python API.
 Assuming ``girder_client.py`` and ``metadata_extractor.py`` are located in
 the module path, the following code fragment will extract metadata from a file
 located at ``path`` on the remote filesystem that has been uploaded to
@@ -156,6 +198,40 @@ After successfully creating the Client ID, copy and paste the client ID and clie
 secret values into the plugin's configuration page, and hit **Save**. Users should
 then be able to log in with their Google account when they click the log in page
 and select the option to log in with Google.
+
+
+Curation
+--------
+
+This plugin adds curation functionality to Girder, allowing content to be
+assembled and approved prior to publication. Admin users can activate curation
+for any folder, and users who are then granted permission can compose content
+under that folder. The users can request publication of the content when it is
+ready, which admins may approve or reject. The plugin provides a UI along with
+workflow management, notification, and permission support for these actions.
+
+The standard curation workflow works as follows, with any operations affecting
+privacy or permissions being applied to the folder and all of its descendent
+folders.
+
+- Site admins can enable curation for any folder, which changes the folder to
+  Private.
+- Users with write access can populate the folder with data.
+- When ready, a user can request approval from the admin. The folder becomes
+  read-only at this point for any user or group with write access, to avoid
+  further changes being made while the admin is reviewing.
+- The admin can approve or reject the folder contents.
+- If approved, the folder becomes Public.
+- If rejected, the folder becomes writeable again by any user or group with read
+  access, enabling users to make changes and resubmit for approval.
+
+The curation dialog is accessible from the Folder actions menu and shows the
+following information.
+
+- Whether curation is enabled or disabled for the folder.
+- The current curation status: construction, requested, or approved.
+- A timeline of status changes, who performed them and when.
+- Context-dependent action buttons to perform state transitions.
 
 
 Provenance Tracker
@@ -267,7 +343,7 @@ via Girder's interface.
 Once you enable the plugin, site administrators will be able to create and edit
 HDFS assetstores on the ``Assetstores`` page in the web client in the same way
 as any other assetstore type. When creating or editing an assetstore, validation
-is performed to ensure that the HDFS instance is reachable for communciation, and
+is performed to ensure that the HDFS instance is reachable for communication, and
 that the directory specified as the root path exists. If it does not exist, Girder
 will attempt to create it.
 
@@ -289,3 +365,27 @@ being downloaded, but still must reside in the same location on HDFS.
 Duplicates (that is, pre-existing files with the same name in the same location
 in the Girder hierarchy) will be ignored if, for instance, you import the same
 hierarchy into the same location twice in a row.
+
+Remote Worker
+-------------
+
+This plugin should be enabled if you want to use the Girder worker distributed
+processing engine to execute batch jobs initiated by the server. This is useful
+for deploying service architectures that involve both data management and
+scalable offline processing. This plugin provides utilities for sending generic tasks
+to worker nodes for execution. The worker itself uses
+`celery <http://www.celeryproject.org/>`_ to manage the distribution of tasks,
+and builds in some useful Girder integrations on top of celery. Namely,
+
+* **Data management**: This plugin provides python functions for building task
+  input and output specs that refer to data stored on the Girder server, making
+  it easy to run processing on specific folders, items, or files. The worker itself
+  knows how to authenticate and download data from the server, and upload results
+  back to it.
+* **Job management**: This plugin depends on the :ref:`Jobs plugin <jobsplugin>`.
+  Tasks are specified as python dictionaries inside of a job document and then
+  scheduled via celery. The worker automatically updates the status of jobs
+  as they are received and executed so that they can be monitored via the jobs
+  UI in real time. If the script prints any logging information, it is automatically
+  collected in the job log on the server, and if the script raises an exception,
+  the job status is automatically set to an error state.

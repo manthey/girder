@@ -24,8 +24,8 @@ girder.views.ItemListWidget = girder.View.extend({
         this.collection = new girder.collections.ItemCollection();
         this.collection.append = true; // Append, don't replace pages
         this.collection.on('g:changed', function () {
-            this.trigger('g:changed');
             this.render();
+            this.trigger('g:changed');
         }, this).fetch({
             folderId: settings.folderId
         });
@@ -34,14 +34,20 @@ girder.views.ItemListWidget = girder.View.extend({
     render: function () {
         this.checked = [];
         this.$el.html(girder.templates.itemList({
-            items: this.collection.models,
+            items: this.collection.toArray(),
             hasMore: this.collection.hasNextPage(),
             girder: girder,
             checkboxes: this._checkboxes
         }));
 
+        this.$('.g-item-list-entry a[title]').tooltip({
+            container: 'body',
+            placement: 'auto',
+            delay: 100
+        });
+
         var view = this;
-        this.$('.g-list-checkbox').unbind('change').change(function () {
+        this.$('.g-list-checkbox').change(function () {
             var cid = $(this).attr('g-item-cid');
             if (this.checked) {
                 view.checked.push(cid);
@@ -75,7 +81,7 @@ girder.views.ItemListWidget = girder.View.extend({
 
         this.checked = [];
         if (checked) {
-            _.each(this.collection.models, function (model) {
+            this.collection.each(function (model) {
                 this.checked.push(model.cid);
             }, this);
         }
@@ -103,5 +109,11 @@ girder.views.ItemListWidget = girder.View.extend({
         }
         var cid = $('.g-item-list-link', $(el[0])).attr('g-item-cid');
         return this.collection.get(cid);
+    },
+
+    recomputeChecked: function () {
+        this.checked = _.map(this.$('.g-list-checkbox:checked'), function (checkbox) {
+            return $(checkbox).attr('g-item-cid');
+        }, this);
     }
 });

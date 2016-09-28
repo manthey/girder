@@ -16,6 +16,10 @@ girder.views.EditAssetstoreWidget = girder.View.extend({
         }
     },
 
+    initialize: function (settings) {
+        this.model = settings.model || null;
+    },
+
     /**
      * This maps each type of assetstore to a function to getter and setter
      * functions. The set functions are reponsible for populating the dialog
@@ -32,10 +36,6 @@ girder.views.EditAssetstoreWidget = girder.View.extend({
      * we set them after this class rather than inline with object creation syntax.
      */
     fieldsMap: {},
-
-    initialize: function (settings) {
-        this.model = settings.model || null;
-    },
 
     render: function () {
         var view = this;
@@ -57,7 +57,7 @@ girder.views.EditAssetstoreWidget = girder.View.extend({
     updateAssetstore: function (fields) {
         var oldfields = {};
         var model = this.model;
-        _.each(fields, function (value, key, obj) {
+        _.each(fields, function (value, key) {
             oldfields[key] = model.get(key);
         });
         this.model.set(fields);
@@ -79,10 +79,13 @@ girder.views.EditAssetstoreWidget = girder.View.extend({
     fieldsMap[girder.AssetstoreType.FILESYSTEM] = {
         get: function () {
             return {
-                root: this.$('#g-edit-fs-root').val()
+                root: this.$('#g-edit-fs-root').val(),
+                perms: this.$('#g-edit-fs-perms').val()
             };
         },
         set: function () {
+            var permStr = this.model.get('perms') ? this.model.get('perms').toString(8) : '600';
+            this.$('#g-edit-fs-perms').val(permStr);
             this.$('#g-edit-fs-root').val(this.model.get('root'));
         }
     };
@@ -109,7 +112,8 @@ girder.views.EditAssetstoreWidget = girder.View.extend({
                 prefix: this.$('#g-edit-s3-prefix').val(),
                 accessKeyId: this.$('#g-edit-s3-access-key-id').val(),
                 secret: this.$('#g-edit-s3-secret').val(),
-                service: this.$('#g-edit-s3-service').val()
+                service: this.$('#g-edit-s3-service').val(),
+                readOnly: this.$('#g-edit-s3-readonly').is(':checked')
             };
         },
         set: function () {
@@ -118,6 +122,7 @@ girder.views.EditAssetstoreWidget = girder.View.extend({
             this.$('#g-edit-s3-access-key-id').val(this.model.get('accessKeyId'));
             this.$('#g-edit-s3-secret').val(this.model.get('secret'));
             this.$('#g-edit-s3-service').val(this.model.get('service'));
+            this.$('#g-edit-s3-readonly').attr('checked', this.model.get('readOnly') ? 'checked' : undefined);
         }
     };
-}) ();
+})();

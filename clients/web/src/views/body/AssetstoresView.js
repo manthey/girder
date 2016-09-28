@@ -11,20 +11,20 @@ girder.views.AssetstoresView = girder.View.extend({
     initialize: function (settings) {
         girder.cancelRestRequests('fetch');
         this.assetstoreEdit = settings.assetstoreEdit || false;
+        this.importableTypes = [
+            girder.AssetstoreType.FILESYSTEM,
+            girder.AssetstoreType.S3
+        ].concat(settings.importableTypes || []);
 
         this.newAssetstoreWidget = new girder.views.NewAssetstoreWidget({
             parentView: this
         }).on('g:created', this.addAssetstore, this);
 
         // Fetch all of the current assetstores
-        if (girder.currentUser && girder.currentUser.get('admin')) {
-            this.collection = new girder.collections.AssetstoreCollection();
-            this.collection.on('g:changed', function () {
-                this.render();
-            }, this).fetch();
-        } else {
+        this.collection = new girder.collections.AssetstoreCollection();
+        this.collection.on('g:changed', function () {
             this.render();
-        }
+        }, this).fetch();
     },
 
     render: function () {
@@ -33,8 +33,10 @@ girder.views.AssetstoresView = girder.View.extend({
             return;
         }
         this.$el.html(girder.templates.assetstores({
-            assetstores: this.collection.models,
-            types: girder.AssetstoreType
+            assetstores: this.collection.toArray(),
+            types: girder.AssetstoreType,
+            importableTypes: this.importableTypes,
+            getAssetstoreImportRoute: this.getAssetstoreImportRoute
         }));
 
         this.newAssetstoreWidget.setElement(this.$('#g-new-assetstore-container')).render();
@@ -68,7 +70,7 @@ girder.views.AssetstoresView = girder.View.extend({
             ['Used (' + girder.formatSize(used) + ')', used],
             ['Free (' + girder.formatSize(capacity.free) + ')', capacity.free]
         ];
-        var plot = $(el).jqplot([data], {
+        $(el).jqplot([data], {
             seriesDefaults: {
                 renderer: $.jqplot.PieRenderer,
                 rendererOptions: {
@@ -108,7 +110,13 @@ girder.views.AssetstoresView = girder.View.extend({
                 timeout: 4000
             });
             this.collection.fetch({}, true);
-        }, this).save();
+        }, this).off('g:error').on('g:error', function (err) {
+            girder.events.trigger('g:alert', {
+                icon: 'cancel',
+                text: err.responseJSON.message,
+                type: 'danger'
+            });
+        }).save();
     },
 
     deleteAssetstore: function (evt) {
@@ -155,16 +163,42 @@ girder.views.AssetstoresView = girder.View.extend({
             el: container,
             model: assetstore,
             parentView: this
-        }).off('g:saved').on('g:saved', function (group) {
+        }).off('g:saved').on('g:saved', function () {
             this.render();
         }, this);
         editAssetstoreWidget.render();
     }
 });
 
+/**
+ * This data structure is a dynamic way to map assetstore types to the views
+ * that should be rendered to import data into them.
+ */
+girder.assetstoreImportViewMap = {};
+girder.assetstoreImportViewMap[girder.AssetstoreType.FILESYSTEM] = 'FilesystemImportView';
+girder.assetstoreImportViewMap[girder.AssetstoreType.S3] = 'S3ImportView';
+
 girder.router.route('assetstores', 'assetstores', function (params) {
     girder.events.trigger('g:navigateTo', girder.views.AssetstoresView, {
-        assetstoreEdit: params.dialog === 'assetstoreedit' ?
-                        params.dialogid : false
+        assetstoreEdit: params.dialog === 'assetstoreedit'
+                        ? params.dialogid : false
     });
+});
+
+girder.router.route('assetstore/:id/import', 'assetstoreImport', function (assetstoreId) {
+    var assetstore = new girder.models.AssetstoreModel({
+        _id: assetstoreId
+    });
+
+    assetstore.once('g:fetched', function () {
+        var viewName = girder.assetstoreImportViewMap[assetstore.get('type')],
+            view = girder.views[viewName];
+
+        if (!view) {
+            throw 'No such view: ' + viewName;
+        }
+        girder.events.trigger('g:navigateTo', view, {
+            assetstore: assetstore
+        });
+    }).fetch();
 });

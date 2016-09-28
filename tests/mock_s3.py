@@ -30,6 +30,7 @@ import moto.server
 import moto.s3
 from girder.utility.s3_assetstore_adapter import makeBotoConnectParams, \
     botoConnectS3, S3AssetstoreAdapter
+from six.moves import range
 
 _startPort = 31100
 _maxTries = 100
@@ -94,7 +95,7 @@ def startMockS3Server():
     if 'mocks3' not in os.environ.get('EXTRADEBUG', '').split():
         logging.getLogger('werkzeug').setLevel(logging.CRITICAL)
     selectedPort = None
-    for porttry in xrange(_maxTries):
+    for porttry in range(_maxTries):
         port = _startPort + ((porttry + os.getpid()) % _maxTries)
         test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -102,7 +103,7 @@ def startMockS3Server():
             selectedPort = port
         except socket.error as err:
             # Allow address in use errors to fail quietly
-            if err[0] != errno.EADDRINUSE:
+            if err.errno != errno.EADDRINUSE:
                 raise
         test_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         test_socket.close()
@@ -160,7 +161,7 @@ def _create_app(service):
 
 if __name__ == '__main__':
     """
-    Provide a simple stand-alone program so that developers can run girder with
+    Provide a simple stand-alone program so that developers can run Girder with
     a modified conf file to simulate an S3 store.
     """
     parser = argparse.ArgumentParser(

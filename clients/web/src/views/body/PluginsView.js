@@ -7,7 +7,7 @@ girder.views.PluginsView = girder.View.extend({
             var route = $(evt.currentTarget).attr('g-route');
             girder.router.navigate(route, {trigger: true});
         },
-        'click .g-plugin-restart-button': function (evt) {
+        'click .g-plugin-restart-button': function () {
             var params = {
                 text: 'Are you sure you want to restart the server?  This ' +
                       'will interrupt all running tasks for all users.',
@@ -39,7 +39,13 @@ girder.views.PluginsView = girder.View.extend({
 
     render: function () {
         _.each(this.allPlugins, function (info, name) {
-            if (this.enabled.indexOf(name) >= 0) {
+            info.unmetDependencies = this._unmetDependencies(info);
+            if (!_.isEmpty(info.unmetDependencies)) {
+                // Disable any plugins with unmet dependencies.
+                this.enabled = _.without(this.enabled, name);
+            }
+
+            if (_.contains(this.enabled, name)) {
                 info.enabled = true;
                 info.configRoute = girder.getPluginConfigRoute(name);
             }
@@ -51,25 +57,30 @@ girder.views.PluginsView = girder.View.extend({
 
         var view = this;
         this.$('.g-plugin-switch').bootstrapSwitch()
-            .off('switchChange.bootstrapSwitch')
-            .on('switchChange.bootstrapSwitch', function (event, state) {
-                var plugin = $(event.currentTarget).attr('key');
-                if (state === true) {
-                    view.enabled.push(plugin);
-                } else {
-                    var idx;
-                    while ((idx = view.enabled.indexOf(plugin)) >= 0) {
-                        view.enabled.splice(idx, 1);
-                    }
-                }
-                girder.pluginsChanged = true;
-                $('.g-plugin-restart').addClass('g-plugin-restart-show');
-                view._updatePlugins();
-            });
+          .off('switchChange.bootstrapSwitch')
+          .on('switchChange.bootstrapSwitch', function (event, state) {
+              var plugin = $(event.currentTarget).attr('key');
+              if (state === true) {
+                  view.enabled.push(plugin);
+              } else {
+                  var idx;
+                  while ((idx = view.enabled.indexOf(plugin)) >= 0) {
+                      view.enabled.splice(idx, 1);
+                  }
+              }
+              girder.pluginsChanged = true;
+              $('.g-plugin-restart').addClass('g-plugin-restart-show');
+              view._updatePlugins();
+          });
         this.$('.g-plugin-config-link').tooltip({
             container: this.$el,
             animation: false,
             placement: 'bottom',
+            delay: {show: 100}
+        });
+        this.$('.g-experimental-notice').tooltip({
+            container: this.$el,
+            animation: false,
             delay: {show: 100}
         });
         if (girder.pluginsChanged) {
@@ -77,6 +88,21 @@ girder.views.PluginsView = girder.View.extend({
         }
 
         return this;
+    },
+
+    /**
+     * Takes a plugin object and determines if it has any top level
+     * unmet dependencies.
+     *
+     * Given A depends on B, and B depends on C, and C is not present:
+     * A will have unmet dependencies of ['B'], and B will have unmet dependencies
+     * of ['C'].
+     **/
+    _unmetDependencies: function (plugin) {
+        return _.reject(plugin.dependencies, function (pluginName) {
+            return _.has(this.allPlugins, pluginName) &&
+                _.isEmpty(this._unmetDependencies(this.allPlugins[pluginName]));
+        }, this);
     },
 
     _sortPlugins: function (plugins) {
@@ -97,6 +123,10 @@ girder.views.PluginsView = girder.View.extend({
     },
 
     _updatePlugins: function () {
+        // Remove any missing plugins from the enabled list. Can happen
+        // if the directory of an enabled plugin disappears.
+        this.enabled = _.intersection(this.enabled, _.keys(this.allPlugins));
+
         girder.restRequest({
             path: 'system/plugins',
             type: 'PUT',
@@ -110,9 +140,7 @@ girder.views.PluginsView = girder.View.extend({
                 this.$('.g-plugin-switch[key="' + plugin + '"]')
                     .attr('checked', 'checked').bootstrapSwitch('state', true, true);
             }, this);
-        }, this)).error(_.bind(function () {
-            // TODO acknowledge?
-        }, this));
+        }, this));  // TODO acknowledge?
     }
 });
 

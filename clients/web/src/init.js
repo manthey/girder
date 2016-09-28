@@ -4,12 +4,17 @@
 'use strict';
 
 /*
+ * Initialize global girder object
+ */
+var girder = girder || {};
+
+/*
  * Some cross-browser globals
  */
 if (!window.console) {
     var console = {
-        log: function () {},
-        error: function () {}
+        log: $.noop,
+        error: $.noop
     };
 }
 
@@ -22,8 +27,10 @@ _.extend(girder, {
     staticRoot: $('#g-global-info-staticroot').text().replace(
         '%HOST%', window.location.origin),
     currentUser: null,
+    currentToken: null,
     events: _.clone(Backbone.Events),
     uploadHandlers: {},
+    corsAuth: girder.corsAuth || false,
 
     /**
      * Constants and enums:
@@ -61,11 +68,14 @@ _.extend(girder, {
      * behavior, pass an "error" key in your opts object; this should be done
      * any time the server might throw an exception from validating user input,
      * e.g. logging in, registering, or generally filling out forms.
+     *
      * @param path The resource path, e.g. "user/login"
      * @param data The form parameter object.
      * @param [type='GET'] The HTTP method to invoke.
+     * @param [girderToken] An alternative auth token to use for this request.
      */
     restRequest: function (opts) {
+        opts = opts || {};
         var defaults = {
             dataType: 'json',
             type: 'GET',
@@ -129,7 +139,9 @@ _.extend(girder, {
 
         opts = _.extend(defaults, opts);
 
-        var token = girder.cookie.find('girderToken');
+        var token = opts.girderToken ||
+                    girder.currentToken ||
+                    girder.cookie.find('girderToken');
         if (token) {
             opts.headers = opts.headers || {};
             opts.headers['Girder-Token'] = token;
@@ -137,19 +149,41 @@ _.extend(girder, {
         return Backbone.ajax(opts);
     },
 
-    login: function (username, password) {
+    /**
+     * Log in to the server. If successful, sets the value of girder.currentUser
+     * and girder.currentToken and triggers the "g:login" and "g:login.success".
+     * On failure, triggers the "g:login.error" event.
+     *
+     * @param username The username or email to login as.
+     * @param password The password to use.
+     * @param cors If the girder server is on a different origin, set this
+     *        to "true" to save the auth cookie on the current domain. Alternatively,
+     *        you may set the global option "girder.corsAuth = true".
+     */
+    login: function (username, password, cors) {
         var auth = 'Basic ' + window.btoa(username + ':' + password);
+        if (cors === undefined) {
+            cors = girder.corsAuth;
+        }
 
         return girder.restRequest({
             method: 'GET',
             path: '/user/authentication',
             headers: {
-                Authorization: auth
-            }
+                'Girder-Authorization': auth
+            },
+            error: null
         }).then(function (response) {
             response.user.token = response.authToken;
 
             girder.currentUser = new girder.models.UserModel(response.user);
+            girder.currentToken = response.user.token.token;
+
+            if (cors && !girder.cookie.find('girderToken')) {
+                // For cross-origin requests, we should write the token into
+                // this document's cookie also.
+                document.cookie = 'girderToken=' + girder.currentToken;
+            }
 
             girder.events.trigger('g:login.success', response.user);
             girder.events.trigger('g:login', response);
@@ -167,6 +201,7 @@ _.extend(girder, {
             path: '/user/authentication'
         }).then(function () {
             girder.currentUser = null;
+            girder.currentToken = null;
 
             girder.events.trigger('g:login', null);
             girder.events.trigger('g:logout.success');

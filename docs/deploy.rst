@@ -58,15 +58,31 @@ Nginx can be used by adding a block such as:
 .. code-block:: nginx
 
     location /girder/ {
-        proxy_set_header X-Forwarded-Host $http_host;
-        proxy_set_header X-Forwarded-Server $host;
+        proxy_set_header Host $proxy_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_pass http://localhost:9000/;
         # Must set the following for SSE notifications to work
         proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header Connection '';
+        proxy_http_version 1.1;
+        chunked_transfer_encoding off;
         proxy_read_timeout 600s;
         proxy_send_timeout 600s;
+        # proxy_request_buffering option only works on nginx >= 1.7.11
+        # but is necessary to support streaming requests
+        proxy_request_buffering off;
+    }
+
+And under the containing ``server`` block, make sure to add the following rule:
+
+.. code-block:: nginx
+
+    server {
+        client_max_body_size 500M;
+        ...
     }
 
 Girder Settings
@@ -83,23 +99,26 @@ example, we have the following:
     server.socket_host: "0.0.0.0"
     server.socket_port: 9000
     tools.proxy.on: True
-    tools.proxy.base: "http://www.example.com/girder"
-    tools.proxy.local: ""
 
     [server]
     api_root: "/girder/api/v1"
     static_root: "/girder/static"
 
-The ``tools.proxy.base`` and ``tools.proxy.local`` aren't necessary if the
-proxy service adds the appropriate X-Forwarded-Host header to proxied requests.
-For this purpose, the X-Forwarded-Host should be the host used in http
-requests, including any non-default port.
+.. note:: If your chosen proxy server does not add the appropriate
+   ``X-Forwarded-Host`` header (containing the host used in http requests,
+   including any non-default port to proxied requests), the ``tools.proxy.base``
+   and ``tools.proxy.local`` configuration options must also be set in the
+   ``[global]`` section as:
+
+   .. code-block:: ini
+
+       tools.proxy.base: "http://www.example.com/girder"
+       tools.proxy.local: ""
 
 After modifying the configuration, always remember to rebuild Girder by
-changing to the main Girder directory and issuing the following command: ::
+changing to the Girder directory and issuing the following command: ::
 
-    $ grunt init && grunt
-
+    $ npm install
 
 Docker Container
 ----------------
@@ -109,7 +128,7 @@ image of a docker container running Girder. This container exposes Girder at
 port 8080 and requires the database URL to be passed in as an option. For more
 information, see the
 `Docker Hub Page <https://registry.hub.docker.com/u/girder/girder/>`_. Since the
-container does not run a databse, you'll need to run a command in the form: ::
+container does not run a database, you'll need to run a command in the form: ::
 
    $ docker run -p 8080:8080 girder/girder -d mongodb://db-server-external-ip:27017/girder
 
@@ -129,7 +148,7 @@ the following environment variables set: ::
     $ export CLUSTER_NAME=hello-girder
 
 Start a new project in Google Developers Console
-(here we assume it's identifier is ``my-girder``).
+(here we assume its identifier is ``my-girder``).
 Set this as your active project with ::
 
     $ gcloud config set project my-girder

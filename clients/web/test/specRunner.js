@@ -1,9 +1,9 @@
 /**
  * Copyright Kitware Inc.
  *
- * This is the phantomjs runtime script that invokes the girder app in test
+ * This is the PhantomJS runtime script that invokes the Girder app in test
  * mode. The test mode page is built with grunt and lives at:
- * clients/web/static/built/testEnv.html. It then executes a jasmine spec within
+ * clients/web/static/built/testEnv.html. It then executes a Jasmine spec within
  * the context of that test application, and afterwards runs our custom coverage
  * handler on the coverage data.
  */
@@ -11,9 +11,9 @@
 if (phantom.args.length < 2) {
     console.error('Usage: phantomjs phantom_jasmine_runner.js <page> <spec> [<covg_output> [<default jasmine timeout>]');
     console.error('  <page> is the path to the HTML page to load');
-    console.error('  <spec> is the path to the jasmine spec to run.');
+    console.error('  <spec> is the path to the Jasmine spec to run.');
     console.error('  <covg_output> is the path to a file to write coverage into.');
-    console.error('  <default jasmine timeout> is in milliseconds.');
+    console.error('  <default Jasmine timeout> is in milliseconds.');
     phantom.exit(2);
 }
 
@@ -63,6 +63,11 @@ page.onConsoleMessage = function (msg) {
 
         console.log('<DartMeasurementFile name="PhantomScreenshot" type="image/png">' +
             fs.workingDirectory + fs.separator + imageFile + '</DartMeasurementFile>');
+
+        console.log('Dumping ajax trace:')
+        console.log(page.evaluate(function () {
+            return JSON.stringify(girderTest.ajaxLog(true), null, '  ');
+        }));
         return;
     }
 
@@ -112,10 +117,9 @@ page.onCallback = function (data) {
                 fs.write(path, new Array(data.size + 1).join("-"), "wb");
             }
             page.uploadFile(data.selector, path);
-            if (fs.size(path) >= 1024 * 64) {
-                return fs.size(path);
-            }
-            return fs.read(path);
+            return fs.read(path, {
+                mode: 'rb'
+            });
         case 'uploadCleanup':
             if (fs.exists(uploadTemp)) {
                 fs.remove(uploadTemp);

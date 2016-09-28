@@ -17,23 +17,23 @@
 #  limitations under the License.
 ###############################################################################
 
-import cherrypy
 import os
 import posixpath
 import pwd
 import requests
+from snakebite.client import Client as HdfsClient
 import uuid
 
 from girder import logger
+from girder.api.rest import setResponseHeader
 from girder.models.model_base import ValidationException
 from girder.utility.abstract_assetstore_adapter import AbstractAssetstoreAdapter
-from snakebite.client import Client as HdfsClient
 
 
 class HdfsAssetstoreAdapter(AbstractAssetstoreAdapter):
     def __init__(self, assetstore):
-        self.assetstore = assetstore
-        self.client = self._getClient(assetstore)
+        super(HdfsAssetstoreAdapter, self).__init__(assetstore)
+        self.client = self._getClient(self.assetstore)
 
     @staticmethod
     def _getHdfsUser(assetstore):
@@ -113,15 +113,14 @@ class HdfsAssetstoreAdapter(AbstractAssetstoreAdapter):
                 'total': None
             }
 
-    def downloadFile(self, file, offset=0, headers=True):
+    def downloadFile(self, file, offset=0, headers=True, endByte=None,
+                     contentDisposition=None, extraParameters=None, **kwargs):
+        if endByte is None or endByte > file['size']:
+            endByte = file['size']
+
         if headers:
-            mimeType = file.get('mimeType')
-            if not mimeType:
-                mimeType = 'application/octet-stream'
-            cherrypy.response.headers['Content-Type'] = mimeType
-            cherrypy.response.headers['Content-Length'] = file['size'] - offset
-            cherrypy.response.headers['Content-Disposition'] = \
-                'attachment; filename="%s"' % file['name']
+            setResponseHeader('Accept-Ranges', 'bytes')
+            self.setContentHeaders(file, offset, endByte, contentDisposition)
 
         if file['hdfs'].get('imported'):
             path = file['hdfs']['path']
@@ -129,17 +128,28 @@ class HdfsAssetstoreAdapter(AbstractAssetstoreAdapter):
             path = self._absPath(file)
 
         def stream():
-            skipped = 0
+            position = 0
             fileStream = self.client.cat([path]).next()
+            shouldBreak = False
             for chunk in fileStream:
-                if skipped < offset:
-                    if skipped + len(chunk) <= offset:
-                        skipped += len(chunk)
-                    else:
-                        yield chunk[offset - skipped:]
-                        skipped = offset
+                chunkLen = len(chunk)
+
+                if position < offset:
+                    if position + chunkLen > offset:
+                        if position + chunkLen > endByte:
+                            chunkLen = endByte - position
+                            shouldBreak = True
+                        yield chunk[offset - position:chunkLen]
                 else:
-                    yield chunk
+                    if position + chunkLen > endByte:
+                        chunkLen = endByte - position
+                        shouldBreak = True
+                    yield chunk[:chunkLen]
+
+                position += chunkLen
+
+                if shouldBreak:
+                    break
         return stream
 
     def deleteFile(self, file):

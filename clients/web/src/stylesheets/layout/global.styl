@@ -66,17 +66,7 @@ ul.dropdown-menu
 
 /* Augment the bootstrap tabs styling a bit */
 .nav-tabs>li:not(.active)>a
-  background-color #f7f7f7
-  border 1px solid #d8d8d8
-
-  &:hover
-    border 1px solid #cdcdcd
-    background-color #f0f0f0
-    background linear-gradient(top, #f0f0f0, #f7f7f7)
-
-/* Bug fix for tabs in bootstrap 3 */
-.nav-tabs
-  overflow hidden
+  border 1px solid #e2e2e2
 
 /* Personal preference for less white space at bottom of dialogs */
 .modal-footer
@@ -97,6 +87,9 @@ ul.dropdown-menu
 blockquote p
   font-size inherit
 
+code
+  font-family monospace
+
 /* Don't show the vertical scroll bar when we show a dialog unless we must */
 .modal
   overflow-y auto
@@ -114,3 +107,30 @@ blockquote p
 
 textarea
   max-width 100%
+
+/* Stuff that applies across the top level object lists */
+.g-top-level-list-title-container
+  display inline-block
+
+.g-list-public-status-icon
+  display inline-block
+  line-height 40px
+  vertical-align top
+  color #888
+  margin-right 10px
+  border-right 1px solid #dedede
+  padding-right 5px
+  font-size 18px
+  margin-left -5px
+
+.g-top-level-list-entry
+  padding 11px 14px
+  margin 2px 0
+  border-radius 3px
+  background-color #fafafc
+  border 1px solid #eaeaea
+  box-shadow inset 0 0 2px 2px #f4f4f4
+
+  &[public="false"]
+    box-shadow inset 0 0 2px 2px #fff0e0
+    background-color #fff9ea

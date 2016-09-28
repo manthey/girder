@@ -7,7 +7,10 @@
  */
 girder.views.UploadWidget = girder.View.extend({
     events: {
-        'submit #g-upload-form': 'startUpload',
+        'submit #g-upload-form': function (e) {
+            e.preventDefault();
+            this.startUpload();
+        },
         'click .g-resume-upload': function () {
             this.$('.g-upload-error-message').html('');
             this.currentFile.resumeUpload();
@@ -16,7 +19,7 @@ girder.views.UploadWidget = girder.View.extend({
             this.$('.g-upload-error-message').html('');
             this.uploadNextFile();
         },
-        'change #g-files': function (e) {
+        'change #g-files': function () {
             var files = this.$('#g-files')[0].files;
 
             if (files.length) {
@@ -24,7 +27,7 @@ girder.views.UploadWidget = girder.View.extend({
                 this.filesChanged();
             }
         },
-        'click .g-drop-zone': function (e) {
+        'click .g-drop-zone': function () {
             this.$('#g-files').click();
         },
         'dragenter .g-drop-zone': function (e) {
@@ -170,9 +173,7 @@ girder.views.UploadWidget = girder.View.extend({
         this.trigger('g:filesChanged', this.files);
     },
 
-    startUpload: function (e) {
-        e.preventDefault();
-
+    startUpload: function () {
         this.setUploadEnabled(false);
         this.$('.g-drop-zone').addClass('hide');
         this.$('.g-progress-overall,.g-progress-current').removeClass('hide');
@@ -211,12 +212,15 @@ girder.views.UploadWidget = girder.View.extend({
             if (this.modal) {
                 this.$el.modal('hide');
             }
-            this.trigger('g:uploadFinished');
+            this.trigger('g:uploadFinished', {
+                files: this.files,
+                totalSize: this.totalSize
+            });
             return;
         }
 
-        this.currentFile = this.parentType === 'file' ?
-                this.parent : new girder.models.FileModel();
+        this.currentFile = this.parentType === 'file'
+                ? this.parent : new girder.models.FileModel();
 
         this.currentFile.on('g:upload.complete', function () {
             this.currentIndex += 1;

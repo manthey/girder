@@ -1,10 +1,16 @@
-add_python_test(gravatar PLUGIN gravatar)
+get_filename_component(PLUGIN ${CMAKE_CURRENT_LIST_DIR} NAME)
+
+add_python_test(gravatar PLUGIN ${PLUGIN})
 add_python_style_test(
-  python_static_analysis_gravatar
-  "${PROJECT_SOURCE_DIR}/plugins/gravatar/server"
+  python_static_analysis_${PLUGIN}
+  "${PROJECT_SOURCE_DIR}/plugins/${PLUGIN}/server"
+)
+add_python_style_test(
+  python_static_analysis_${PLUGIN}_tests
+  "${PROJECT_SOURCE_DIR}/plugins/${PLUGIN}/plugin_tests"
 )
 
-add_javascript_style_test(
-    gravatar
-    "${PROJECT_SOURCE_DIR}/plugins/gravatar/web_client/js"
+add_eslint_test(
+    ${PLUGIN}
+    "${PROJECT_SOURCE_DIR}/plugins/${PLUGIN}/web_client/js"
 )

@@ -18,10 +18,11 @@
 ###############################################################################
 
 import cherrypy
+import mimetypes
 import os
 
 import girder.events
-from girder import constants
+from girder import constants, logprint
 from girder.utility import plugin_utilities, model_importer
 from girder.utility import config
 from . import webroot
@@ -52,26 +53,31 @@ def configureServer(test=False, plugins=None, curConfig=None):
             'request.methods_with_bodies': ('POST', 'PUT', 'PATCH')
         },
         '/static': {
-            'tools.staticdir.on': 'True',
+            'tools.staticdir.on': True,
             'tools.staticdir.dir': 'clients/web/static'
         }
     }
+    # Add MIME types for serving Fontello files from staticdir;
+    # these may be missing or incorrect in the OS
+    mimetypes.add_type('application/vnd.ms-fontobject', '.eot')
+    mimetypes.add_type('application/x-font-ttf', '.ttf')
+    mimetypes.add_type('application/font-woff', '.woff')
 
     if test:
         appconf['/src'] = {
-            'tools.staticdir.on': 'True',
+            'tools.staticdir.on': True,
             'tools.staticdir.dir': 'clients/web/src',
         }
         appconf['/test'] = {
-            'tools.staticdir.on': 'True',
+            'tools.staticdir.on': True,
             'tools.staticdir.dir': 'clients/web/test',
         }
         appconf['/clients'] = {
-            'tools.staticdir.on': 'True',
+            'tools.staticdir.on': True,
             'tools.staticdir.dir': 'clients'
         }
         appconf['/plugins'] = {
-            'tools.staticdir.on': 'True',
+            'tools.staticdir.on': True,
             'tools.staticdir.dir': 'plugins',
         }
 
@@ -85,6 +91,10 @@ def configureServer(test=False, plugins=None, curConfig=None):
             'static_root': 'static',
             'api_static_root': '../static'
         }})
+
+    mode = curConfig['server']['mode'].lower()
+    logprint.info('Running in mode: ' + mode)
+    cherrypy.config['engine.autoreload.on'] = mode == 'development'
 
     # Don't import this until after the configs have been read; some module
     # initialization code requires the configuration to be set up.
@@ -101,6 +111,8 @@ def configureServer(test=False, plugins=None, curConfig=None):
         plugins = settings.get(constants.SettingKey.PLUGINS_ENABLED,
                                default=())
 
+    plugins = list(plugin_utilities.getToposortedPlugins(
+        plugins, curConfig, ignoreMissing=True))
     root.updateHtmlVars({
         'apiRoot': curConfig['server']['api_root'],
         'staticRoot': curConfig['server']['static_root'],
@@ -116,7 +128,8 @@ def configureServer(test=False, plugins=None, curConfig=None):
     })
 
     root, appconf, _ = plugin_utilities.loadPlugins(
-        plugins, root, appconf, root.api.v1, curConfig=curConfig)
+        plugins, root, appconf, root.api.v1, curConfig=curConfig,
+        buildDag=False)
 
     return root, appconf
 

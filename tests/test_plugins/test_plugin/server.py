@@ -19,28 +19,36 @@
 import os
 
 from girder.api import access
-from girder.api.describe import Description
-from girder.api.rest import boundHandler, Resource
+from girder.api.describe import Description, describeRoute
+from girder.api.rest import boundHandler, rawResponse, Resource
 from girder.api.v1.collection import Collection
 from girder.utility.server import staticFile
 
 
 @access.public
+@boundHandler
+@describeRoute(None)
+def unboundHandlerDefaultNoArgs(self, params):
+    self.requireParams('val', params)
+    return not self.boolParam('val', params)
+
+
+@access.public
 @boundHandler()
+@describeRoute(None)
 def unboundHandlerDefault(self, params):
     self.requireParams('val', params)
     return not self.boolParam('val', params)
-unboundHandlerDefault.description = None
 
 
 @access.public
 @boundHandler(Collection())
+@describeRoute(None)
 def unboundHandlerExplicit(self, params):
     return {
         'user': self.getCurrentUser(),
         'name': self.resourceName
     }
-unboundHandlerExplicit.description = None
 
 
 class CustomAppRoot(object):
@@ -55,14 +63,31 @@ class CustomAppRoot(object):
 
 class Other(Resource):
     def __init__(self):
+        super(Other, self).__init__()
         self.resourceName = 'other'
 
         self.route('GET', (), self.getResource)
+        self.route('GET', ('rawWithDecorator',), self.rawWithDecorator)
+        self.route('GET', ('rawInternal',), self.rawInternal)
 
     @access.public
+    @rawResponse
+    @describeRoute(None)
+    def rawWithDecorator(self, params):
+        return b'this is a raw response'
+
+    @access.public
+    @describeRoute(None)
+    def rawInternal(self, params):
+        self.setRawResponse()
+        return b'this is also a raw response'
+
+    @access.public
+    @describeRoute(
+        Description('Get something.')
+    )
     def getResource(self, params):
         return ['custom REST route']
-    getResource.description = Description('Get something.')
 
 
 def load(info):
@@ -71,6 +96,8 @@ def load(info):
     info['serverRoot'].api = info['serverRoot'].girder.api
     del info['serverRoot'].girder.api
 
+    info['apiRoot'].collection.route('GET', ('unbound', 'default', 'noargs'),
+                                     unboundHandlerDefaultNoArgs)
     info['apiRoot'].collection.route('GET', ('unbound', 'default'),
                                      unboundHandlerDefault)
     info['apiRoot'].collection.route('GET', ('unbound', 'explicit'),

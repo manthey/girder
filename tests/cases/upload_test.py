@@ -82,13 +82,15 @@ class UploadTestCase(base.TestCase):
                 self.folder = folder
 
     def _uploadFile(self, name, partial=False, largeFile=False):
-        """Upload a file either completely or partially.
+        """
+        Upload a file either completely or partially.
         :param name: the name of the file to upload.
         :param partial: the number of steps to complete in the uploads: 0
                         initializes the upload, 1 uploads 1 chunk, etc.  False
                         to complete the upload.
         :param largeFile: if True, upload a file that is > 32Mb
-        :returns: the upload record which includes the upload id."""
+        :returns: the upload record which includes the upload id.
+        """
         if not largeFile:
             chunk1 = Chunk1
             chunk2 = Chunk2
@@ -163,15 +165,17 @@ class UploadTestCase(base.TestCase):
         return upload
 
     def _testUpload(self):
-        """Upload a file to the server and several partial files.  Test that we
-        can delete a partial upload but not a completed upload.  Test that was
-        can delete partial uploads that are older than a certain date."""
+        """
+        Upload a file to the server and several partial files.  Test that we
+        can delete a partial upload but not a completed upload. Test that we
+        can delete partial uploads that are older than a certain date.
+        """
         completeUpload = self._uploadFile('complete_upload')
         # test uploading large files
         self._uploadFile('complete_upload', largeFile=True)
         partialUploads = []
         for largeFile in (False, True):
-            for partial in xrange(3):
+            for partial in range(3):
                 partialUploads.append(self._uploadFile(
                     'partial_upload_%d_%s' % (partial, str(largeFile)),
                     partial, largeFile))
@@ -187,7 +191,7 @@ class UploadTestCase(base.TestCase):
         foundUploads = resp.json
         self.assertEqual(len(foundUploads), len(partialUploads))
         # The user shouldn't be able to delete an upload
-        resp = self.request(path='/system/uploads', method='GET',
+        resp = self.request(path='/system/uploads', method='DELETE',
                             user=self.user,
                             params={'uploadId': partialUploads[0]['_id']})
         self.assertStatus(resp, 403)
@@ -249,11 +253,11 @@ class UploadTestCase(base.TestCase):
 
     def testGridFSAssetstoreUpload(self):
         # Clear any old DB data
-        base.dropGridFSDatabase('girder_assetstore_upload_test')
+        base.dropGridFSDatabase('girder_test_upload_assetstore')
         # Clear the assetstore database and create a GridFS assetstore
         self.model('assetstore').remove(self.model('assetstore').getCurrent())
         assetstore = self.model('assetstore').createGridFsAssetstore(
-            name='Test', db='girder_assetstore_upload_test')
+            name='Test', db='girder_test_upload_assetstore')
         self.assetstore = assetstore
         self._testUpload()
 
