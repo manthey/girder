@@ -25,6 +25,7 @@ from girder import events
 from girder.constants import SettingKey
 from girder.utility import assetstore_utilities
 from .model_base import Model, GirderException, ValidationException
+from girder.utility.progress import noProgress
 
 
 class Upload(Model):
@@ -238,11 +239,6 @@ class Upload(Model):
 
         if event.responses:
             assetstore = event.responses[-1]
-        elif 'assetstore' in eventParams:
-            # This mode of event response is deprecated, but is preserved here
-            # for backward compatibility
-            # TODO remove in v2.0
-            assetstore = eventParams['assetstore']
         elif not assetstore:
             assetstore = self.model('assetstore').getCurrent()
 
@@ -354,7 +350,7 @@ class Upload(Model):
         upload = adapter.initUpload(upload)
         return self.save(upload)
 
-    def moveFileToAssetstore(self, file, user, assetstore):
+    def moveFileToAssetstore(self, file, user, assetstore, progress=noProgress):
         """
         Move a file from whatever assetstore it is located in to a different
         assetstore.  This is done by downloading and re-uploading the file.
@@ -362,6 +358,7 @@ class Upload(Model):
         :param file: the file to move.
         :param user: the user that is authorizing the move.
         :param assetstore: the destination assetstore.
+        :param progress: optional progress context.
         :returns: the original file if it is not moved, or the newly 'uploaded'
             file if it is.
         """
@@ -391,9 +388,13 @@ class Upload(Model):
                 chunk = data
             if len(chunk) >= chunkSize:
                 upload = self.handleChunk(upload, six.BytesIO(chunk))
+                progress.update(increment=len(chunk))
                 chunk = None
+
         if chunk is not None:
             upload = self.handleChunk(upload, six.BytesIO(chunk))
+            progress.update(increment=len(chunk))
+
         return upload
 
     def list(self, limit=0, offset=0, sort=None, filters=None):

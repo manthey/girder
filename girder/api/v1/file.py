@@ -26,6 +26,7 @@ from ..rest import Resource, RestException, filtermodel, loadmodel
 from ...constants import AccessType, TokenScope
 from girder.models.model_base import AccessException, GirderException
 from girder.api import access
+from girder.utility.progress import ProgressContext
 
 
 class File(Resource):
@@ -77,7 +78,7 @@ class File(Resource):
         .param('reference', 'If included, this information is passed to the '
                'data.process event when the upload is complete.',
                required=False)
-        .param('assetstoreId', 'Direct the upload to a specific assetstore.',
+        .param('assetstoreId', 'Direct the upload to a specific assetstore (admin-only).',
                required=False)
         .errorResponse()
         .errorResponse('Write access was denied on the parent folder.', 403)
@@ -107,11 +108,14 @@ class File(Resource):
             return self.model('file').filter(
                 self.model('file').createLinkFile(
                     url=params['linkUrl'], parent=parent, name=params['name'],
-                    parentType=parentType, creator=user), user)
+                    parentType=parentType, creator=user, size=params.get('size'),
+                    mimeType=mimeType), user)
         else:
             self.requireParams('size', params)
             assetstore = None
             if params.get('assetstoreId'):
+                self.requireAdmin(
+                    user, message='You must be an admin to select a destination assetstore.')
                 assetstore = self.model('assetstore').load(
                     params['assetstoreId'])
             try:
@@ -137,10 +141,10 @@ class File(Resource):
         .notes('This is only required in certain non-standard upload '
                'behaviors. Clients should know which behavior models require '
                'the finalize step to be called in their behavior handlers.')
-        .param('uploadId', 'The ID of the upload record.', paramType='form')
-        .errorResponse('ID was invalid.')
-        .errorResponse('The upload does not require finalization.')
-        .errorResponse('Not enough bytes have been uploaded.')
+        .param('uploadId', 'The ID of the upload record.', paramType='formData')
+        .errorResponse(('ID was invalid.',
+                        'The upload does not require finalization.',
+                        'Not enough bytes have been uploaded.'))
         .errorResponse('You are not the user who initiated the upload.', 403)
     )
     def finalizeUpload(self, params):
@@ -193,16 +197,16 @@ class File(Resource):
     @describeRoute(
         Description('Upload a chunk of a file with multipart/form-data.')
         .consumes('multipart/form-data')
-        .param('uploadId', 'The ID of the upload record.', paramType='form')
+        .param('uploadId', 'The ID of the upload record.', paramType='formData')
         .param('offset', 'Offset of the chunk in the file.', dataType='integer',
-               paramType='form')
+               paramType='formData')
         .param('chunk', 'The actual bytes of the chunk. For external upload '
                'behaviors, this may be set to an opaque string that will be '
                'handled by the assetstore adapter.',
-               dataType='File', paramType='body')
-        .errorResponse('ID was invalid.')
-        .errorResponse('Received too many bytes.')
-        .errorResponse('Chunk is smaller than the minimum size.')
+               dataType='file', paramType='formData')
+        .errorResponse(('ID was invalid.',
+                        'Received too many bytes.',
+                        'Chunk is smaller than the minimum size.'))
         .errorResponse('You are not the user who initiated the upload.', 403)
         .errorResponse('Failed to store upload.', 500)
     )
@@ -366,7 +370,7 @@ class File(Resource):
         .param('reference', 'If included, this information is passed to the '
                'data.process event when the upload is complete.',
                required=False)
-        .param('assetstoreId', 'Direct the upload to a specific assetstore.',
+        .param('assetstoreId', 'Direct the upload to a specific assetstore (admin-only).',
                required=False)
         .notes('After calling this, send the chunks just like you would with a '
                'normal file upload.')
@@ -377,6 +381,8 @@ class File(Resource):
 
         assetstore = None
         if params.get('assetstoreId'):
+            self.requireAdmin(
+                user, message='You must be an admin to select a destination assetstore.')
             assetstore = self.model('assetstore').load(params['assetstoreId'])
         # Create a new upload record into the existing file
         upload = self.model('upload').createUploadToFile(
@@ -389,19 +395,27 @@ class File(Resource):
             return self.model('file').filter(
                 self.model('upload').finalizeUpload(upload), user)
 
-    @access.user(scope=TokenScope.DATA_WRITE)
+    @access.admin(scope=TokenScope.DATA_WRITE)
     @loadmodel(model='file', level=AccessType.WRITE)
+    @filtermodel(model='file')
     @describeRoute(
         Description('Move a file to a different assetstore.')
         .param('id', 'The ID of the file.', paramType='path')
         .param('assetstoreId', 'The destination assetstore.')
+        .param('progress', 'Controls whether progress notifications will be sent.',
+               dataType='boolean', default=False, required=False)
     )
     def moveFileToAssetstore(self, file, params):
         self.requireParams('assetstoreId', params)
         user = self.getCurrentUser()
+        progress = self.boolParam('progress', params, False)
         assetstore = self.model('assetstore').load(params['assetstoreId'])
-        return self.model('upload').moveFileToAssetstore(
-            file=file, user=user, assetstore=assetstore)
+
+        title = 'Moving file \'%s\' to assetstore \'%s\'' \
+            % (file['name'], assetstore['name'])
+        with ProgressContext(progress, user=user, title=title, total=file['size']) as ctx:
+            return self.model('upload').moveFileToAssetstore(
+                file=file, user=user, assetstore=assetstore, progress=ctx)
 
     @access.user(scope=TokenScope.DATA_WRITE)
     @loadmodel(model='file', level=AccessType.READ)

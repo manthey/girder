@@ -1,20 +1,20 @@
-describe('Test DateTimeWidget', function() {
+describe('Test DateTimeWidget', function () {
     var widget;
 
-    describe('default construction', function() {
-        beforeEach(function() {
-            widget = new girder.views.DateTimeWidget({
+    describe('default construction', function () {
+        beforeEach(function () {
+            widget = new girder.views.widgets.DateTimeWidget({
                 parentView: null
             });
             widget.render();
         });
 
-        it('create the widget', function() {
+        it('create the widget', function () {
             expect(widget.$('.g-datetime-widget').length).toBe(1);
         });
 
-        it('create multiple widgets', function() {
-            var widget2 = new girder.views.DateTimeWidget({
+        it('create multiple widgets', function () {
+            var widget2 = new girder.views.widgets.DateTimeWidget({
                 parentView: null
             });
             widget2.render();
@@ -23,16 +23,16 @@ describe('Test DateTimeWidget', function() {
             expect(widget2.$('.g-datetime-widget').length).toBe(1);
         });
 
-        it('default initialization', function() {
+        it('default initialization', function () {
             expect(widget.$('.g-datetime-widget').length).toBe(1);
             expect(widget.date()).toBeNull();
             expect(widget.dateString().length).toBe(0);
         });
     });
 
-    describe('custom construction', function() {
-        it('default date', function() {
-            widget = new girder.views.DateTimeWidget({
+    describe('custom construction', function () {
+        it('default date', function () {
+            widget = new girder.views.widgets.DateTimeWidget({
                 parentView: null,
                 defaultDate: '2015-02-01T12:00Z'
             });
@@ -42,8 +42,8 @@ describe('Test DateTimeWidget', function() {
             expect(widget.date().isSame(moment('2015-02-01T12:00Z'))).toBe(true);
         });
 
-        it('null default date', function() {
-            widget = new girder.views.DateTimeWidget({
+        it('null default date', function () {
+            widget = new girder.views.widgets.DateTimeWidget({
                 parentView: null,
                 defaultDate: null
             });
@@ -52,8 +52,8 @@ describe('Test DateTimeWidget', function() {
             expect(widget.date()).toBeNull();
         });
 
-        it('blank default date', function() {
-            widget = new girder.views.DateTimeWidget({
+        it('blank default date', function () {
+            widget = new girder.views.widgets.DateTimeWidget({
                 parentView: null,
                 defaultDate: ''
             });
@@ -62,9 +62,9 @@ describe('Test DateTimeWidget', function() {
             expect(widget.date()).toBeNull();
         });
 
-        it('without icon', function() {
+        it('without icon', function () {
             var parent = $('body').append('<div></div>');
-            widget = new girder.views.DateTimeWidget({
+            widget = new girder.views.widgets.DateTimeWidget({
                 parentView: null,
                 el: parent,
                 showIcon: false
@@ -78,9 +78,9 @@ describe('Test DateTimeWidget', function() {
             expect(widget.$('.bootstrap-datetimepicker-widget').length).toBe(1);
         });
 
-        it('with icon', function() {
+        it('with icon', function () {
             var parent = $('body').append('<div></div>');
-            widget = new girder.views.DateTimeWidget({
+            widget = new girder.views.widgets.DateTimeWidget({
                 parentView: null,
                 el: parent,
                 showIcon: true
@@ -95,93 +95,93 @@ describe('Test DateTimeWidget', function() {
         });
     });
 
-    describe('set/get date', function() {
-        beforeEach(function() {
-            widget = new girder.views.DateTimeWidget({
+    describe('set/get date', function () {
+        beforeEach(function () {
+            widget = new girder.views.widgets.DateTimeWidget({
                 parentView: null
             });
             widget.render();
         });
 
-        it('set date from ISO 8601 string in UTC', function() {
+        it('set date from ISO 8601 string in UTC', function () {
             widget.setDate('2015-02-01T12:00Z');
             expect(widget.date()).not.toBeNull();
             expect(widget.date().isSame(moment('2015-02-01T12:00Z'))).toBe(true);
         });
 
-        it('set date from ISO 8601 string with UTC offset', function() {
+        it('set date from ISO 8601 string with UTC offset', function () {
             widget.setDate('2015-02-01T12:00-05:00');
             expect(widget.date()).not.toBeNull();
             expect(widget.date().isSame(moment('2015-02-01T17:00Z'))).toBe(true);
         });
 
-        it('set date from string without time', function() {
+        it('set date from string without time', function () {
             widget.setDate('2015-02-01');
             expect(widget.date()).not.toBeNull();
             expect(widget.date().isSame(moment('2015-02-01T00:00Z'))).toBe(true);
         });
 
-        it('set date from object in UTC', function() {
+        it('set date from object in UTC', function () {
             widget.setDate(moment('2015-03-01T12:00Z'));
             expect(widget.date()).not.toBeNull();
             expect(widget.date().isSame(moment('2015-03-01T12:00Z'))).toBe(true);
         });
 
-        it('set date from object with UTC offset', function() {
+        it('set date from object with UTC offset', function () {
             widget.setDate(moment('2015-03-01T12:00-05:00'));
             expect(widget.date()).not.toBeNull();
             expect(widget.date().isSame(moment('2015-03-01T17:00Z'))).toBe(true);
         });
 
-        it('clear date with null', function() {
+        it('clear date with null', function () {
             widget.setDate(moment());
             expect(widget.date()).not.toBeNull();
             widget.setDate(null);
             expect(widget.date()).toBeNull();
         });
 
-        it('clear date with empty string', function() {
+        it('clear date with empty string', function () {
             widget.setDate(moment());
             expect(widget.date()).not.toBeNull();
             widget.setDate('');
             expect(widget.date()).toBeNull();
         });
 
-        it('get date as string when set in UTC', function() {
+        it('get date as string when set in UTC', function () {
             widget.setDate('2015-02-01T12:00Z');
             expect(widget.dateString()).toBe('2015-02-01T12:00:00+00:00');
         });
 
-        it('get date as string when set with UTC offset', function() {
+        it('get date as string when set with UTC offset', function () {
             widget.setDate('2015-02-01T12:00-05:00');
             expect(widget.dateString()).toBe('2015-02-01T17:00:00+00:00');
         });
 
-        it('get date as string when not set', function() {
+        it('get date as string when not set', function () {
             expect(widget.date()).toBeNull();
             expect(widget.dateString()).toBe('');
         });
     });
 });
 
-describe('Test DateTimeRangeWidget', function() {
+describe('Test DateTimeRangeWidget', function () {
     var widget;
 
-    describe('default construction', function() {
-        beforeEach(function() {
-            widget = new girder.views.DateTimeRangeWidget({
+    describe('default construction', function () {
+        beforeEach(function () {
+            widget = new girder.views.widgets.DateTimeRangeWidget({
                 parentView: null
             });
             widget.render();
         });
 
-        it('create the widget', function() {
+        it('create the widget', function () {
             expect(widget.$('.g-datetime-widget-from').length).toBe(1);
             expect(widget.$('.g-datetime-widget-to').length).toBe(1);
         });
 
-        it('create multiple widgets', function() {
-            var widget2 = new girder.views.DateTimeRangeWidget({
+        it('create multiple widgets', function () {
+            var widget2 = new girder.views.widgets.DateTimeRangeWidget({
                 parentView: null
             });
             widget2.render();
@@ -192,7 +192,7 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget2.$('.g-datetime-widget-to').length).toBe(1);
         });
 
-        it('default initialization', function() {
+        it('default initialization', function () {
             expect(widget.$('.g-datetime-widget-from').val().length).toBe(0);
             expect(widget.$('.g-datetime-widget-to').val().length).toBe(0);
             expect(widget.fromDate()).toBeNull();
@@ -202,9 +202,9 @@ describe('Test DateTimeRangeWidget', function() {
         });
     });
 
-    describe('custom construction', function() {
-        it('default dates', function() {
-            widget = new girder.views.DateTimeRangeWidget({
+    describe('custom construction', function () {
+        it('default dates', function () {
+            widget = new girder.views.widgets.DateTimeRangeWidget({
                 parentView: null,
                 defaultFromDate: '2015-02-01T12:00Z',
                 defaultToDate: '2015-03-01T12:00Z'
@@ -217,8 +217,8 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.toDate().isSame(moment('2015-03-01T12:00Z'))).toBe(true);
         });
 
-        it('null default dates', function() {
-            widget = new girder.views.DateTimeRangeWidget({
+        it('null default dates', function () {
+            widget = new girder.views.widgets.DateTimeRangeWidget({
                 parentView: null,
                 defaultFromDate: null,
                 defaultToDate: null
@@ -229,8 +229,8 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.toDate()).toBeNull();
         });
 
-        it('blank default dates', function() {
-            widget = new girder.views.DateTimeRangeWidget({
+        it('blank default dates', function () {
+            widget = new girder.views.widgets.DateTimeRangeWidget({
                 parentView: null,
                 defaultFromDate: '',
                 defaultToDate: ''
@@ -241,9 +241,9 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.toDate()).toBeNull();
         });
 
-        it('without icon', function() {
+        it('without icon', function () {
             var parent = $('body').append('<div></div>');
-            widget = new girder.views.DateTimeRangeWidget({
+            widget = new girder.views.widgets.DateTimeRangeWidget({
                 parentView: null,
                 el: parent,
                 showIcon: false
@@ -264,9 +264,9 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.$('.bootstrap-datetimepicker-widget').length).toBe(0);
         });
 
-        it('with icon', function() {
+        it('with icon', function () {
             var parent = $('body').append('<div></div>');
-            widget = new girder.views.DateTimeRangeWidget({
+            widget = new girder.views.widgets.DateTimeRangeWidget({
                 parentView: null,
                 el: parent,
                 showIcon: true
@@ -287,8 +287,8 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.$('.bootstrap-datetimepicker-widget').length).toBe(0);
         });
 
-        it('custom labels', function() {
-            widget = new girder.views.DateTimeRangeWidget({
+        it('custom labels', function () {
+            widget = new girder.views.widgets.DateTimeRangeWidget({
                 parentView: null,
                 fromLabel: 'Custom From',
                 toLabel: 'Custom To'
@@ -300,15 +300,15 @@ describe('Test DateTimeRangeWidget', function() {
         });
     });
 
-    describe('set/get dates', function() {
-        beforeEach(function() {
-            widget = new girder.views.DateTimeRangeWidget({
+    describe('set/get dates', function () {
+        beforeEach(function () {
+            widget = new girder.views.widgets.DateTimeRangeWidget({
                 parentView: null
             });
             widget.render();
         });
 
-        it('set dates from ISO 8601 string in UTC', function() {
+        it('set dates from ISO 8601 string in UTC', function () {
             widget.setFromDate('2015-02-01T12:00Z');
             expect(widget.fromDate()).not.toBeNull();
             expect(widget.fromDate().isSame(moment('2015-02-01T12:00Z'))).toBe(true);
@@ -320,7 +320,7 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.fromDate().isSame(moment('2015-02-01T12:00Z'))).toBe(true);
         });
 
-        it('set dates from ISO 8601 string with UTC offset', function() {
+        it('set dates from ISO 8601 string with UTC offset', function () {
             widget.setFromDate('2015-02-01T12:00-05:00');
             expect(widget.fromDate()).not.toBeNull();
             expect(widget.fromDate().isSame(moment('2015-02-01T17:00Z'))).toBe(true);
@@ -332,7 +332,7 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.fromDate().isSame(moment('2015-02-01T17:00Z'))).toBe(true);
         });
 
-        it('set dates from string without time', function() {
+        it('set dates from string without time', function () {
             widget.setFromDate('2015-02-01');
             expect(widget.fromDate()).not.toBeNull();
             expect(widget.fromDate().isSame(moment('2015-02-01T00:00Z'))).toBe(true);
@@ -344,7 +344,7 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.fromDate().isSame(moment('2015-02-01T00:00Z'))).toBe(true);
         });
 
-        it('set dates from object in UTC', function() {
+        it('set dates from object in UTC', function () {
             widget.setFromDate(moment('2015-03-01T12:00Z'));
             expect(widget.fromDate()).not.toBeNull();
             expect(widget.fromDate().isSame(moment('2015-03-01T12:00Z'))).toBe(true);
@@ -356,7 +356,7 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.fromDate().isSame(moment('2015-03-01T12:00Z'))).toBe(true);
         });
 
-        it('set dates from object with UTC offset', function() {
+        it('set dates from object with UTC offset', function () {
             widget.setFromDate(moment('2015-03-01T12:00-05:00'));
             expect(widget.fromDate()).not.toBeNull();
             expect(widget.fromDate().isSame(moment('2015-03-01T17:00Z'))).toBe(true);
@@ -368,7 +368,7 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.fromDate().isSame(moment('2015-03-01T17:00Z'))).toBe(true);
         });
 
-        it('clear dates with null', function() {
+        it('clear dates with null', function () {
             widget.setFromDate(moment());
             expect(widget.fromDate()).not.toBeNull();
             widget.setFromDate(null);
@@ -380,7 +380,7 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.toDate()).toBeNull();
         });
 
-        it('clear dates with empty string', function() {
+        it('clear dates with empty string', function () {
             widget.setFromDate(moment());
             expect(widget.fromDate()).not.toBeNull();
             widget.setFromDate('');
@@ -392,7 +392,7 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.toDate()).toBeNull();
         });
 
-        it('get dates as string when set in UTC', function() {
+        it('get dates as string when set in UTC', function () {
             widget.setFromDate('2015-02-01T12:00Z');
             expect(widget.fromDateString()).toBe('2015-02-01T12:00:00+00:00');
 
@@ -400,7 +400,7 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.toDateString()).toBe('2015-03-01T12:00:00+00:00');
         });
 
-        it('get dates as string when set with UTC offset', function() {
+        it('get dates as string when set with UTC offset', function () {
             widget.setFromDate('2015-02-01T12:00-05:00');
             expect(widget.fromDateString()).toBe('2015-02-01T17:00:00+00:00');
 
@@ -408,7 +408,7 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.toDateString()).toBe('2015-03-01T17:00:00+00:00');
         });
 
-        it('get dates as string when not set', function() {
+        it('get dates as string when not set', function () {
             expect(widget.fromDate()).toBeNull();
             expect(widget.fromDateString()).toBe('');
 
@@ -416,14 +416,14 @@ describe('Test DateTimeRangeWidget', function() {
             expect(widget.toDateString()).toBe('');
         });
 
-        it('enforce valid range when set from date first', function() {
+        it('enforce valid range when set from date first', function () {
             widget.setFromDate('2015-01-01');
             widget.setToDate('2014-12-01');
             expect(widget.fromDate().isSame(moment.utc('2015-01-01'))).toBe(true);
             expect(widget.toDate()).toBeNull();
         });
 
-        it('enforce valid range when set to date first', function() {
+        it('enforce valid range when set to date first', function () {
             widget.setToDate('2014-12-01');
             widget.setFromDate('2015-01-01');
             // This automatically populates "to" date, but perhaps that's not
