@@ -58,6 +58,9 @@ class PythonClientTestCase(base.TestCase):
             filename = os.path.join(dirName, 'f1')
             with open(filename, 'w') as f:
                 f.write(filename)
+            filename = os.path.join(dirName, u'\u0441\u043b\u0430\u0439\u0434')
+            with open(filename, 'wb') as f:
+                f.write(filename.encode('utf8'))
 
         # make some temp dirs and files
         self.libTestDir = os.path.join(os.path.dirname(__file__), '_libTestDir')
@@ -443,7 +446,7 @@ class PythonClientTestCase(base.TestCase):
     def testDownloadCache(self):
         item = self.client.createItem(
             self.publicFolder['_id'], 'SomethingEvenMoreUnique')
-        path = os.path.join(self.libTestDir, 'sub0', 'f')
+        path = os.path.join(self.libTestDir, 'sub0', u'\u0441\u043b\u0430\u0439\u0434')
         file = self.client.uploadFileToItem(item['_id'], path)
 
         # create another client with caching enabled
@@ -460,7 +463,7 @@ class PythonClientTestCase(base.TestCase):
         def mock(url, request):
             hits.append(url)
 
-        expected = b'tests/cases/py_client/_libTestDir/sub0/f'
+        expected = path.encode('utf8')
 
         with httmock.HTTMock(mock):
             # download the file

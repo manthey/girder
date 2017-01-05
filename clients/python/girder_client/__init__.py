@@ -604,10 +604,15 @@ class GirderClient(object):
         :param filename: name of file to look for under the parent item.
         :param filepath: path to file on disk.
         """
+        if not isinstance(filename, six.binary_type):
+            filename = filename.encode('utf8')
         path = 'item/' + itemId + '/files'
         itemFiles = self.get(path)
         for itemFile in itemFiles:
-            if filename == itemFile['name']:
+            itemFileName = itemFile['name']
+            if not isinstance(itemFileName, six.binary_type):
+                itemFileName = itemFileName.encode('utf8')
+            if filename == itemFileName:
                 file_id = itemFile['_id']
                 size = os.path.getsize(filepath)
                 return (file_id, size == itemFile['size'])
