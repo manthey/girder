@@ -87,11 +87,12 @@ fi
 
 # Use the already downloaded fontello archive.
 export GIRDER_LOCAL_FONTELLO_ARCHIVE=${PROJECT_SOURCE_DIR}/clients/web/static/built/fontello.zip
+webroot=$(girder-install web-root)
+
 # Build the web client code
 girder-install web || exit 1
 
 # Make sure that our grunt targets got built
-webroot=$(girder-install web-root)
 if [ ! -f "${webroot}/static/built/girder_app.min.js" ] ; then
     echo "Error: Grunt targets were not built correctly"
     exit 1

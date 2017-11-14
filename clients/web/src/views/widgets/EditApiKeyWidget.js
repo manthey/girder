@@ -1,3 +1,4 @@
+import $ from 'jquery';
 import _ from 'underscore';
 
 import ApiKeyModel from 'girder/models/ApiKeyModel';
@@ -54,7 +55,7 @@ var EditApiKeyWidget = View.extend({
         this._shouldRender = false;
 
         restRequest({
-            path: 'token/scopes'
+            url: 'token/scopes'
         }).done(_.bind(function (resp) {
             this.scopeInfo = resp;
             if (this._shouldRender) {
@@ -93,11 +94,6 @@ var EditApiKeyWidget = View.extend({
         modal.trigger($.Event('ready.girder.modal', {relatedTarget: modal}));
 
         this.$('#g-api-key-name').focus();
-        this.$('.g-custom-scope-description').tooltip({
-            placement: 'right',
-            viewport: this.$el,
-            trigger: 'hover'
-        });
 
         return this;
     },

@@ -14,7 +14,7 @@ import GroupMemberListTemplate from 'girder/templates/widgets/groupMemberList.pu
 
 import 'bootstrap/js/collapse';
 import 'bootstrap/js/dropdown';
-import 'bootstrap/js/tooltip';
+import 'bootstrap/js/transition';
 
 import 'girder/utilities/jquery/girderModal';
 
@@ -86,7 +86,6 @@ var GroupMembersWidget = View.extend({
         },
 
         'click a.g-group-member-remove': function (e) {
-            var view = this;
             var user = this.membersColl.get(
                 $(e.currentTarget).parents('li').attr('cid')
             );
@@ -95,8 +94,8 @@ var GroupMembersWidget = View.extend({
                 text: 'Are you sure you want to remove <b> ' + _.escape(user.name()) +
                     '</b> from this group?',
                 escapedHtml: true,
-                confirmCallback: function () {
-                    view.trigger('g:removeMember', user);
+                confirmCallback: () => {
+                    this.trigger('g:removeMember', user);
                 }
             });
         },
@@ -162,13 +161,6 @@ var GroupMembersWidget = View.extend({
             parentView: this
         }).off().on('g:resultClicked', this._inviteUser, this).render();
 
-        this.$('.g-group-member-remove,.g-group-member-promote').tooltip({
-            container: 'body',
-            placement: 'left',
-            animation: false,
-            delay: {show: 100}
-        });
-
         return this;
     },
 
@@ -191,4 +183,3 @@ var GroupMembersWidget = View.extend({
 });
 
 export default GroupMembersWidget;
-

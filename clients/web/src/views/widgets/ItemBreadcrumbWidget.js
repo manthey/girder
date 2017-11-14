@@ -5,8 +5,6 @@ import View from 'girder/views/View';
 
 import IteamBreadcrumbTemplate from 'girder/templates/widgets/itemBreadcrumb.pug';
 
-import 'bootstrap/js/tooltip';
-
 /**
  * Renders the a breadcrumb for the item page
  */
@@ -33,12 +31,7 @@ var ItemBreadcrumbWidget = View.extend({
             parentChain: this.parentChain
         }));
 
-        this.$('.g-hierarchy-level-up').tooltip({
-            container: this.$el,
-            placement: 'left',
-            animation: false,
-            delay: {show: 100}
-        });
+        return this;
     }
 });
 

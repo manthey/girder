@@ -159,12 +159,17 @@ class SettingKey:
     Core settings should be enumerated here by a set of constants corresponding
     to sensible strings.
     """
+    BRAND_NAME = 'core.brand_name'
+    BANNER_COLOR = 'core.banner_color'
     PLUGINS_ENABLED = 'core.plugins_enabled'
     COOKIE_LIFETIME = 'core.cookie_lifetime'
     EMAIL_FROM_ADDRESS = 'core.email_from_address'
+    CONTACT_EMAIL_ADDRESS = 'core.contact_email_address'
     EMAIL_HOST = 'core.email_host'
     REGISTRATION_POLICY = 'core.registration_policy'
     EMAIL_VERIFICATION = 'core.email_verification'
+    SECURE_COOKIE = 'core.secure_cookie'
+    SERVER_ROOT = 'core.server_root'
     SMTP_HOST = 'core.smtp_host'
     SMTP_PORT = 'core.smtp.port'
     SMTP_ENCRYPTION = 'core.smtp.encryption'
@@ -186,9 +191,12 @@ class SettingDefault:
     SettingKey.
     """
     defaults = {
+        SettingKey.BRAND_NAME: 'Girder',
+        SettingKey.BANNER_COLOR: '#3F3B3B',
         SettingKey.PLUGINS_ENABLED: [],
         SettingKey.COOKIE_LIFETIME: 180,
         SettingKey.EMAIL_FROM_ADDRESS: 'Girder <no-reply@girder.org>',
+        SettingKey.CONTACT_EMAIL_ADDRESS: 'kitware@kitware.com',
         SettingKey.REGISTRATION_POLICY: 'open',
         SettingKey.EMAIL_VERIFICATION: 'disabled',
         SettingKey.SMTP_HOST: 'localhost',
@@ -240,6 +248,8 @@ class TokenScope:
 
     _customScopes = []
     _adminCustomScopes = []
+    _scopeIds = set()
+    _adminScopeIds = set()
 
     @classmethod
     def describeScope(cls, scopeId, name, description, admin=False):
@@ -262,8 +272,10 @@ class TokenScope:
         }
         if admin:
             cls._adminCustomScopes.append(info)
+            cls._adminScopeIds.add(scopeId)
         else:
             cls._customScopes.append(info)
+            cls._scopeIds.add(scopeId)
 
     @classmethod
     def listScopes(cls):
@@ -271,6 +283,14 @@ class TokenScope:
             'custom': cls._customScopes,
             'adminCustom': cls._adminCustomScopes
         }
+
+    @classmethod
+    def scopeIds(cls, admin=False):
+        if admin:
+            return cls._scopeIds | cls._adminScopeIds
+        else:
+            return cls._scopeIds
+
 
 TokenScope.describeScope(
     TokenScope.USER_INFO_READ, 'Read your user information',
@@ -326,3 +346,6 @@ class CoreEventHandler(object):
 
     # For adding a user into its own ACL.
     USER_SELF_ACCESS = 'core.grantSelfAccess'
+
+    # For updating the cached webroot HTML when settings change.
+    WEBROOT_SETTING_CHANGE = 'core.updateWebrootSettings'

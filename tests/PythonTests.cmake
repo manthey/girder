@@ -1,5 +1,3 @@
-include(CMakeParseArguments)
-
 set(server_port 20200)
 set(flake8_config "${PROJECT_SOURCE_DIR}/tests/flake8.cfg")
 set(coverage_html_dir "${PROJECT_SOURCE_DIR}/clients/web/dev/built/py_coverage")
@@ -75,16 +73,17 @@ function(add_python_style_test name input)
       WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
       COMMAND "${FLAKE8_EXECUTABLE}" "--config=${flake8_config}" "${input}"
     )
-    set_property(TEST "${name}" PROPERTY LABELS girder_static_analysis girder_python)
+    set_property(TEST "${name}" PROPERTY LABELS girder_static_analysis)
   endif()
 endfunction()
 
 function(add_python_test case)
   set(name "server_${case}")
 
-  set(_options BIND_SERVER PY2_ONLY)
+  set(_options BIND_SERVER PY2_ONLY RUN_SERIAL)
   set(_args DBNAME PLUGIN SUBMODULE)
-  set(_multival_args RESOURCE_LOCKS TIMEOUT EXTERNAL_DATA REQUIRED_FILES)
+  set(_multival_args RESOURCE_LOCKS TIMEOUT EXTERNAL_DATA REQUIRED_FILES COVERAGE_PATHS
+                     ENVIRONMENT SETUP_DATABASE)
   cmake_parse_arguments(fn "${_options}" "${_args}" "${_multival_args}" ${ARGN})
 
   if(fn_PY2_ONLY AND PYTHON_VERSION MATCHES "^3")
@@ -97,10 +96,16 @@ function(add_python_test case)
     set(module plugin_tests.${case}_test)
     set(pythonpath "${PROJECT_SOURCE_DIR}/plugins/${fn_PLUGIN}")
     set(other_covg ",${PROJECT_SOURCE_DIR}/plugins/${fn_PLUGIN}/server")
+    set(test_file "${PROJECT_SOURCE_DIR}/plugins/${fn_PLUGIN}/plugin_tests/${case}_test.py")
   else()
     set(module tests.cases.${case}_test)
     set(pythonpath "")
     set(other_covg "")
+    set(test_file "${PROJECT_SOURCE_DIR}/tests/cases/${case}_test.py")
+  endif()
+
+  if(fn_COVERAGE_PATHS)
+    set(other_covg "${other_covg},${fn_COVERAGE_PATHS}")
   endif()
 
   if(fn_SUBMODULE)
@@ -130,6 +135,12 @@ function(add_python_test case)
     set(_db_name ${name})
   endif()
 
+  if(fn_SETUP_DATABASE)
+    set(TEST_DATABASE_FILE "${fn_SETUP_DATABASE}")
+  else()
+    get_test_database_spec("${test_file}")
+  endif()
+
   string(REPLACE "." "_" _db_name ${_db_name})
   set_property(TEST ${name} PROPERTY ENVIRONMENT
     "PYTHONPATH=$ENV{PYTHONPATH}${_separator}${pythonpath}${_separator}${PROJECT_SOURCE_DIR}/clients/python"
@@ -138,6 +149,8 @@ function(add_python_test case)
     "GIRDER_TEST_PORT=${server_port}"
     "GIRDER_TEST_DATA_PREFIX=${GIRDER_EXTERNAL_DATA_ROOT}"
     "MONGOD_EXECUTABLE=${MONGOD_EXECUTABLE}"
+    "GIRDER_TEST_DATABASE_CONFIG=${TEST_DATABASE_FILE}"
+    "${fn_ENVIRONMENT}"
   )
   set_property(TEST ${name} PROPERTY COST 50)
   set_property(TEST ${name} PROPERTY REQUIRED_FILES ${fn_REQUIRED_FILES})
@@ -151,6 +164,9 @@ function(add_python_test case)
   if(fn_BIND_SERVER)
     math(EXPR next_server_port "${server_port} + 1")
     set(server_port ${next_server_port} PARENT_SCOPE)
+  endif()
+  if(fn_RUN_SERIAL)
+    set_property(TEST ${name} PROPERTY RUN_SERIAL ON)
   endif()
 
   if(PYTHON_COVERAGE)

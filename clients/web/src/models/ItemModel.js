@@ -26,10 +26,11 @@ var ItemModel = Model.extend({
             callback(this.get('_accessLevel'));
             return this.get('_accessLevel');
         } else {
-            this.parent = new FolderModel();
-            this.parent.set({
+            var parent = new FolderModel();
+            parent.set({
                 _id: this.get('folderId')
             }).once('g:fetched', function () {
+                this.parent = parent;
                 this.set('_accessLevel', this.parent.getAccessLevel());
                 callback(this.get('_accessLevel'));
             }, this).fetch();
@@ -41,10 +42,10 @@ var ItemModel = Model.extend({
      */
     getRootPath: function (callback) {
         return restRequest({
-            path: this.resourceName + '/' + this.get('_id') + '/rootpath'
+            url: `${this.resourceName}/${this.id}/rootpath`
         }).done(_.bind(function (resp) {
             callback(resp);
-        }, this)).error(_.bind(function (err) {
+        }, this)).fail(_.bind(function (err) {
             this.trigger('g:error', err);
         }, this));
     }

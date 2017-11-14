@@ -13,8 +13,6 @@ import events from 'girder/events';
 
 import FileListTemplate from 'girder/templates/widgets/fileList.pug';
 
-import 'bootstrap/js/tooltip';
-
 /**
  * This widget shows a list of files in a given item.
  */
@@ -29,6 +27,7 @@ var FileListWidget = View.extend({
             new FileInfoWidget({
                 el: $('#g-dialog-container'),
                 model: this.collection.get(cid),
+                parentItem: this.parentItem,
                 parentView: this
             }).render();
         },
@@ -129,12 +128,6 @@ var FileListWidget = View.extend({
             parentItem: this.parentItem
         }));
 
-        this.$('.g-file-list-entry a[title]').tooltip({
-            container: 'body',
-            placement: 'auto',
-            delay: 100
-        });
-
         if (this.fileEdit) {
             this.editFileDialog(this.fileEdit);
             this.fileEdit = false;
@@ -157,4 +150,3 @@ var FileListWidget = View.extend({
 });
 
 export default FileListWidget;
-

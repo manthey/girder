@@ -1,3 +1,4 @@
+import $ from 'jquery';
 import _ from 'underscore';
 
 import GroupCollection from 'girder/collections/GroupCollection';
@@ -58,8 +59,8 @@ var ConfigView = View.extend({
         }, this).fetch();
 
         restRequest({
-            type: 'GET',
-            path: 'system/setting',
+            method: 'GET',
+            url: 'system/setting',
             data: {
                 list: JSON.stringify(['autojoin'])
             }
@@ -96,20 +97,13 @@ var ConfigView = View.extend({
             parentView: this
         }).render();
 
-        this.$('[title]').tooltip({
-            container: this.$el,
-            placement: 'left',
-            animation: false,
-            delay: {show: 100}
-        });
-
         return this;
     },
 
     _saveSettings: function (settings) {
         restRequest({
-            type: 'PUT',
-            path: 'system/setting',
+            method: 'PUT',
+            url: 'system/setting',
             data: {
                 list: JSON.stringify(settings)
             },
@@ -121,7 +115,7 @@ var ConfigView = View.extend({
                 type: 'success',
                 timeout: 4000
             });
-        }, this)).error(_.bind(function (resp) {
+        }, this)).fail(_.bind(function (resp) {
             this.$('#g-autojoin-error-message').text(
                 resp.responseJSON.message
             );

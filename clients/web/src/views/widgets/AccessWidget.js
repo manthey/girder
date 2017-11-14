@@ -1,5 +1,8 @@
 import $ from 'jquery';
 import _ from 'underscore';
+// Bootstrap tooltip is required by popover
+import 'bootstrap/js/tooltip';
+import 'bootstrap/js/popover';
 
 import accessEditorNonModalTemplate from 'girder/templates/widgets/accessEditorNonModal.pug';
 import accessEditorTemplate from 'girder/templates/widgets/accessEditor.pug';
@@ -16,8 +19,6 @@ import { restRequest } from 'girder/rest';
 
 import 'girder/stylesheets/widgets/accessWidget.styl';
 
-import 'bootstrap/js/tooltip';
-
 import 'girder/utilities/jquery/girderModal';
 
 /**
@@ -26,7 +27,7 @@ import 'girder/utilities/jquery/girderModal';
 var AccessWidget = View.extend({
     events: {
         'click button.g-save-access-list': function (e) {
-            $(e.currentTarget).attr('disabled', 'disabled');
+            $(e.currentTarget).girderEnable(false);
             this.saveAccessList();
         },
         'click .g-close-flags-popover': function (e) {
@@ -59,10 +60,12 @@ var AccessWidget = View.extend({
         this.modelType = settings.modelType;
         this.hideRecurseOption = settings.hideRecurseOption || false;
         this.hideSaveButton = settings.hideSaveButton || false;
+        this.hidePrivacyEditor = settings.hidePrivacyEditor || false;
+        this.hideAccessType = settings.hideAccessType || false;
+        this.noAccessFlag = settings.noAccessFlag || false;
         this.modal = _.has(settings, 'modal') ? settings.modal : true;
         this.currentUser = getCurrentUser();
         this.isAdmin = !!(this.currentUser && this.currentUser.get('admin'));
-
         this.searchWidget = new SearchFieldWidget({
             placeholder: 'Start typing a name...',
             modes: ['prefix', 'text'],
@@ -70,16 +73,21 @@ var AccessWidget = View.extend({
             parentView: this
         }).on('g:resultClicked', this.addEntry, this);
 
-        var flagListPromise = restRequest({
-            path: 'system/access_flag'
-        }).done((resp) => {
-            this.flagList = resp;
-        });
+        var flagListPromise = null;
+        if (!this.noAccessFlag) {
+            flagListPromise = restRequest({
+                url: 'system/access_flag'
+            }).done((resp) => {
+                this.flagList = resp;
+            });
+        } else {
+            this.flagList = [];
+        }
 
         $.when(
             flagListPromise,
             this.model.fetchAccess()
-        ).then(() => {
+        ).done(() => {
             this.render();
         });
     },
@@ -117,6 +125,7 @@ var AccessWidget = View.extend({
             publicFlags: this.model.get('publicFlags'),
             hideRecurseOption: this.hideRecurseOption,
             hideSaveButton: this.hideSaveButton,
+            hidePrivacyEditor: this.hidePrivacyEditor,
             flagList: this.flagList,
             isAdmin: this.isAdmin
         }));
@@ -132,6 +141,8 @@ var AccessWidget = View.extend({
                 type: 'group',
                 flagList: this.flagList,
                 isAdmin: this.isAdmin,
+                hideAccessType: this.hideAccessType,
+                noAccessFlag: this.noAccessFlag,
                 entry: _.extend(groupAccess, {
                     title: groupAccess.name,
                     subtitle: groupAccess.description
@@ -146,13 +157,14 @@ var AccessWidget = View.extend({
                 type: 'user',
                 flagList: this.flagList,
                 isAdmin: this.isAdmin,
+                hideAccessType: this.hideAccessType,
+                noAccessFlag: this.noAccessFlag,
                 entry: _.extend(userAccess, {
                     title: userAccess.name,
                     subtitle: userAccess.login
                 })
             }));
         }, this);
-
         this._makeTooltips();
 
         this.searchWidget.setElement(this.$('.g-search-field-container')).render();
@@ -163,19 +175,9 @@ var AccessWidget = View.extend({
     },
 
     _makeTooltips: function () {
-        this.$('.g-access-action-container a,.g-tooltip').tooltip({
-            placement: 'bottom',
-            animation: false,
-            delay: {show: 100}
-        });
-
-        this.$('.g-flag-label span').tooltip({
-            placement: 'bottom'
-        });
-
         // Re-binding popovers actually breaks them, so we make sure to
         // only bind ones that aren't already bound.
-        _.each(this.$('.g-action-manage-flags'), el => {
+        _.each(this.$('.g-action-manage-flags'), (el) => {
             if (!$(el).data('bs.popover')) {
                 $(el).popover({
                     trigger: 'manual',
@@ -196,7 +198,7 @@ var AccessWidget = View.extend({
 
         // Re-binding popovers actually breaks them, so we make sure to
         // only bind ones that aren't already bound.
-        _.each(this.$('.g-action-manage-public-flags'), el => {
+        _.each(this.$('.g-action-manage-public-flags'), (el) => {
             if (!$(el).data('bs.popover')) {
                 $(el).popover({
                     trigger: 'manual',
@@ -252,9 +254,10 @@ var AccessWidget = View.extend({
                         level: AccessType.READ
                     },
                     isAdmin: this.isAdmin,
+                    hideAccessType: this.hideAccessType,
+                    noAccessFlag: this.noAccessFlag,
                     flagList: this.flagList
                 }));
-
                 this._makeTooltips();
             }, this).fetch();
         }
@@ -283,6 +286,8 @@ var AccessWidget = View.extend({
                         level: AccessType.READ
                     },
                     isAdmin: this.isAdmin,
+                    hideAccessType: this.hideAccessType,
+                    noAccessFlag: this.noAccessFlag,
                     flagList: this.flagList
                 }));
 
@@ -292,46 +297,11 @@ var AccessWidget = View.extend({
     },
 
     saveAccessList: function () {
-        // Rebuild the access list
-        var acList = {
-            users: [],
-            groups: []
-        };
+        var acList = this.getAccessList();
 
-        var publicFlags = _.map(this.$('.g-public-flag-checkbox:checked'), checkbox => {
+        var publicFlags = _.map(this.$('.g-public-flag-checkbox:checked'), (checkbox) => {
             return $(checkbox).attr('flag');
         });
-
-        _.each(this.$('.g-group-access-entry'), function (el) {
-            var $el = $(el);
-            acList.groups.push({
-                name: $el.find('.g-desc-title').html(),
-                id: $el.attr('resourceid'),
-                level: parseInt(
-                    $el.find('.g-access-col-right>select').val(),
-                    10
-                ),
-                flags: _.map($el.find('.g-flag-checkbox:checked'), (checkbox) => {
-                    return $(checkbox).attr('flag');
-                })
-            });
-        }, this);
-
-        _.each(this.$('.g-user-access-entry'), function (el) {
-            var $el = $(el);
-            acList.users.push({
-                login: $el.find('.g-desc-subtitle').html(),
-                name: $el.find('.g-desc-title').html(),
-                id: $el.attr('resourceid'),
-                level: parseInt(
-                    $el.find('.g-access-col-right>select').val(),
-                    10
-                ),
-                flags: _.map($el.find('.g-flag-checkbox:checked'), (checkbox) => {
-                    return $(checkbox).attr('flag');
-                })
-            });
-        }, this);
 
         this.model.set({
             access: acList,
@@ -356,9 +326,50 @@ var AccessWidget = View.extend({
                   });
     },
 
+    getAccessList: function () {
+        // Rebuild the access list
+        var acList = {
+            users: [],
+            groups: []
+        };
+
+        _.each(this.$('.g-group-access-entry'), function (el) {
+            var $el = $(el);
+            acList.groups.push({
+                name: $el.find('.g-desc-title').html(),
+                id: $el.attr('resourceid'),
+                level: parseInt(
+                    $el.find('.g-access-col-right>select').val(),
+                    10
+                ),
+                flags: _.map($el.find('.g-flag-checkbox:checked'),
+                    (checkbox) => $(checkbox).attr('flag')
+                )
+            });
+        }, this);
+
+        _.each(this.$('.g-user-access-entry'), function (el) {
+            var $el = $(el);
+            acList.users.push({
+                login: $el.find('.g-desc-subtitle').html(),
+                name: $el.find('.g-desc-title').html(),
+                id: $el.attr('resourceid'),
+                level: parseInt(
+                    $el.find('.g-access-col-right>select').val(),
+                    10
+                ),
+                flags: _.map($el.find('.g-flag-checkbox:checked'),
+                    (checkbox) => $(checkbox).attr('flag')
+                )
+            });
+        }, this);
+
+        return acList;
+    },
+
     removeAccessEntry: function (event) {
         var sel = '.g-user-access-entry,.g-group-access-entry';
-        $(event.currentTarget).tooltip('hide').parents(sel).remove();
+        $(event.currentTarget).parents(sel).remove();
     },
 
     privacyChanged: function () {
@@ -377,24 +388,37 @@ var AccessWidget = View.extend({
         var el = $(e.currentTarget),
             type = el.attr('resourcetype'),
             id = el.attr('resourceid'),
-            flag = el.attr('flag');
+            flag = el.attr('flag'),
+            container = this.$(`.g-flags-popover-container[resourcetype='${type}'][resourceid='${id}']`);
 
         // Since we clicked in a cloned popover element, we must apply this
         // change within the original element as well.
-        this.$(`.g-flags-popover-container[resourcetype='${type}'][resourceid='${id}']`)
-            .find(`.g-flag-checkbox[flag="${flag}"]`)
+        container.find(`.g-flag-checkbox[flag="${flag}"]`)
             .attr('checked', el.is(':checked') ? 'checked' : null);
+        this._updateFlagCount(container, '.g-flag-checkbox');
     },
 
     _togglePublicAccessFlag: function (e) {
         var el = $(e.currentTarget),
-            flag = el.attr('flag');
+            flag = el.attr('flag'),
+            container = this.$('.g-public-flags-popover-container');
 
         // Since we clicked in a cloned popover element, we must apply this
         // change within the original element as well.
-        this.$('.g-public-flags-popover-container')
-            .find(`.g-public-flag-checkbox[flag="${flag}"]`)
+        container.find(`.g-public-flag-checkbox[flag="${flag}"]`)
             .attr('checked', el.is(':checked') ? 'checked' : null);
+        this._updateFlagCount(container, '.g-public-flag-checkbox');
+    },
+
+    _updateFlagCount: function (container, sel) {
+        const nChecked = container.find(`${sel}[checked="checked"]`).length;
+        const countEl = container.parent().find('.g-flag-count-indicator');
+        countEl.text(nChecked);
+        if (nChecked) {
+            countEl.removeClass('hide');
+        } else {
+            countEl.addClass('hide');
+        }
     }
 });
 

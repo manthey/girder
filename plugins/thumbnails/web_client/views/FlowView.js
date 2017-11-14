@@ -1,3 +1,4 @@
+import $ from 'jquery';
 import _ from 'underscore';
 
 import FileModel from 'girder/models/FileModel';
@@ -32,6 +33,14 @@ var FlowView = View.extend({
                     }).destroy();
                 }, this)
             });
+        },
+
+        'mouseenter .g-thumbnail-container': function () {
+            this.$('.g-thumbnail-actions-container').addClass('g-show');
+        },
+
+        'mouseleave .g-thumbnail-container': function () {
+            this.$('.g-thumbnail-actions-container').removeClass('g-show');
         }
     },
 
@@ -42,20 +51,12 @@ var FlowView = View.extend({
 
     render: function () {
         this.$el.html(FlowViewTemplate({
-            thumbnails: this.thumbnails,
+            thumbnails: this.thumbnails.toArray(),
             accessLevel: this.accessLevel,
             AccessType: AccessType
         }));
 
-        this.$('.g-thumbnail-actions-container a').tooltip({
-            delay: 100
-        });
-
-        this.$('.g-thumbnail-container').hover(function () {
-            $('.g-thumbnail-actions-container', this).addClass('g-show');
-        }, function () {
-            $('.g-thumbnail-actions-container', this).removeClass('g-show');
-        });
+        return this;
     }
 });
 

@@ -28,6 +28,8 @@ from girder.api import access
 from girder.api.describe import Description, describeRoute
 from girder.api.rest import Resource, RestException
 from girder.constants import registerAccessFlag, ROOT_DIR
+from girder.models.folder import Folder
+from girder.models.upload import Upload
 from girder.utility.progress import ProgressContext
 from . import base
 from six.moves import range
@@ -74,14 +76,21 @@ class WebClientTestEndpoints(Resource):
                '"failure".', required=False)
         .param('duration', 'Duration of the test in seconds', required=False,
                dataType='int')
+        .param('resourceId', 'Resource ID associated with the progress notification.',
+               required=False)
+        .param('resourceName', 'Type of resource associated with the progress '
+               'notification.', required=False)
     )
     def testProgress(self, params):
         test = params.get('test', 'success')
         duration = int(params.get('duration', 10))
+        resourceId = params.get('resourceId', None)
+        resourceName = params.get('resourceName', None)
         startTime = time.time()
         with ProgressContext(True, user=self.getCurrentUser(),
                              title='Progress Test', message='Progress Message',
-                             total=duration) as ctx:
+                             total=duration, resource={'_id': resourceId},
+                             resourceName=resourceName) as ctx:
             for current in range(duration):
                 if self.stop:
                     break
@@ -112,14 +121,14 @@ class WebClientTestEndpoints(Resource):
 
         path = os.path.join(ROOT_DIR, params['path'])
         name = os.path.basename(path)
-        folder = self.model('folder').load(params['folderId'], force=True)
+        folder = Folder().load(params['folderId'], force=True)
 
-        upload = self.model('upload').createUpload(
+        upload = Upload().createUpload(
             user=self.getCurrentUser(), name=name, parentType='folder',
             parent=folder, size=os.path.getsize(path))
 
         with open(path, 'rb') as fd:
-            file = self.model('upload').handleChunk(upload, fd)
+            file = Upload().handleChunk(upload, fd)
 
         return file
 
@@ -151,6 +160,11 @@ class WebClientTestCase(base.TestCase):
 
         testServer.root.api.v1.webclienttest = WebClientTestEndpoints()
 
+        if 'SETUP_MODULES' in os.environ:
+            import imp
+            for i, script in enumerate(os.environ['SETUP_MODULES'].split(':')):
+                imp.load_source('girder.web_test_setup%d' % i, script)
+
     def testWebClientSpec(self):
         baseUrl = '/static/built/testing/testEnv.html'
         if os.environ.get('BASEURL', ''):
@@ -171,17 +185,14 @@ class WebClientTestCase(base.TestCase):
         # to be a known issue: https://github.com/ariya/phantomjs/issues/10652.
         # Retry several times if it looks like this has occurred.
         retry_count = os.environ.get('PHANTOMJS_RETRY', 3)
-        for tries in range(int(retry_count)):
+        for _ in range(int(retry_count)):
             retry = False
-            task = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT)
-            hasJasmine = False
+            task = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             jasmineFinished = False
             for line in iter(task.stdout.readline, b''):
                 if isinstance(line, six.binary_type):
                     line = line.decode('utf8')
-                if ('PHANTOM_TIMEOUT' in line or
-                        'error loading source script' in line):
+                if ('PHANTOM_TIMEOUT' in line or 'error loading source script' in line):
                     task.kill()
                     retry = True
                 elif '__FETCHEMAIL__' in line:
@@ -190,8 +201,6 @@ class WebClientTestCase(base.TestCase):
                     open('phantom_temp_%s.tmp' % os.environ['GIRDER_PORT'],
                          'wb').write(msg.get_payload(decode=True))
                     continue  # we don't want to print this
-                if 'Jasmine' in line:
-                    hasJasmine = True
                 if 'Testing Finished' in line:
                     jasmineFinished = True
                 try:
@@ -200,10 +209,8 @@ class WebClientTestCase(base.TestCase):
                     sys.stdout.write(repr(line))
                 sys.stdout.flush()
             returncode = task.wait()
-            if not retry and hasJasmine and jasmineFinished:
+            if not retry and jasmineFinished:
                 break
-            if not hasJasmine:
-                time.sleep(1)
             sys.stderr.write('Retrying test\n')
             # If we are retrying, we need to reset the whole test, as the
             # databases and other resources are in an unknown state

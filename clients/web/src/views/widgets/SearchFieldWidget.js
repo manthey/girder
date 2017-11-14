@@ -1,5 +1,8 @@
 import $ from 'jquery';
 import _ from 'underscore';
+// Bootstrap tooltip is required by popover
+import 'bootstrap/js/tooltip';
+import 'bootstrap/js/popover';
 
 import View from 'girder/views/View';
 import { restRequest } from 'girder/rest';
@@ -10,9 +13,6 @@ import SearchModeSelectTemplate from 'girder/templates/widgets/searchModeSelect.
 import SearchResultsTemplate from 'girder/templates/widgets/searchResults.pug';
 
 import 'girder/stylesheets/widgets/searchFieldWidget.styl';
-
-import 'bootstrap/js/tooltip';
-import 'bootstrap/js/popover';
 
 /**
  * This widget provides a text field that will search any set of data types
@@ -57,6 +57,7 @@ var SearchFieldWidget = View.extend({
                     list.eq(pos).addClass('g-search-selected');
                 }
             } else if (code === 13) { /* enter */
+                e.preventDefault();
                 var link = this.$('.g-search-result.g-search-selected>a');
                 if (link.length) {
                     this._resultClicked(link);
@@ -125,10 +126,6 @@ var SearchFieldWidget = View.extend({
             currentMode: this.currentMode
         }));
 
-        this.$('[title]').tooltip({
-            placement: 'auto'
-        });
-
         this.$('.g-search-options-button').popover({
             trigger: 'manual',
             html: true,
@@ -194,7 +191,7 @@ var SearchFieldWidget = View.extend({
         this.pending = null;
 
         restRequest({
-            path: 'resource/search',
+            url: 'resource/search',
             data: {
                 q: q,
                 mode: this.currentMode,

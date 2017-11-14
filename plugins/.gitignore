@@ -2,8 +2,11 @@
 !.gitignore
 !authorized_upload
 !autojoin
+!candela/
 !celery_jobs/
 !curation/
+!dicom_viewer/
+!download_statistics/
 !geospatial/
 !google_analytics/
 !gravatar/
@@ -12,12 +15,15 @@
 !homepage/
 !item_licenses/
 !item_previews/
+!item_tasks/
 !jobs/
 !jquery_widgets/
+!ldap/
 !metadata_extractor/
 !mongo_search/
 !oauth/
 !provenance/
+!terms/
 !thumbnails/
 !user_quota/
 !vega/
