@@ -178,15 +178,87 @@ jobs:
       #    command: codecov --disable search pycov gcov --file $CIRCLE_WORKING_DIRECTORY/girder_build/coverage.xml
       #    working_directory: girder
 
+  py3_integrationTests:
+    machine: true
+    working_directory: /home/circleci/project # as $CIRCLE_WORKING_DIRECTORY
+
+    steps:
+      - checkout:
+          path: girder
+      # - run:
+      #     name: Install prerequisites
+      #     command: sudo apt-get update && sudo apt-get install -y libgif-dev
+      - run:
+          name: Install ansible
+          command: pip install ansible
+      - run:
+          name: Install Galaxy requirements
+          command: ansible-galaxy install -r examples/girder-dev-environment/requirements.yml
+          working_directory: girder/devops/ansible
+          environment:
+            ANSIBLE_ROLES_PATH: roles:examples/girder-dev-environment/roles
+      # Optionally switch to a different python 2 or 3 here and specify it belowin ansible via  girder_python=`which python3`
+      - run:
+          name: Install Girder via ansible
+          # command: ansible-playbook -i "localhost," -c local examples/girder-dev-environment/site.yml --extra-vars="girder_version=master"
+          command: ansible-playbook -i "localhost," -c local examples/girder-dev-environment/site.yml --extra-vars="girder_version='$CIRCLE_BRANCH' girder_repo='$CIRCLE_REPOSITORY_URL'"
+          # command: ansible-playbook -i "localhost," -c local examples/girder-dev-environment/site.yml --extra-vars="girder_version='$CIRCLE_BRANCH' girder_repo='$CIRCLE_REPOSITORY_URL' girder_python='`which python3`' girder_pip='`which pip3` girder_virtualenv='"
+          working_directory: girder/devops/ansible
+          environment:
+            ANSIBLE_ROLES_PATH: roles:examples/girder-dev-environment/roles
+      - run:
+          name: Include virtualenv in path
+          command: echo '. /home/circleci/.virtualenvs/girder/bin/activate' >> $BASH_ENV
+          # command: echo 'export PATH=/home/circleci/.virtualenvs/girder/bin:$PATH' >> $BASH_ENV
+          # This doesn't work:
+          # name: Activate virtualenv
+          # command: source ~/.virtualenvs/girder/bin/activate
+      - run:
+          name: Install all pip modules
+          # sftp and python client aren't installed by the ansible example
+          command: pip install .[plugins,sftp] clients/python -r requirements-dev.txt
+          working_directory: ~/girder
+      # This may not be necessary
+      # - run:
+      #     name: Install all plugins
+      #     command: girder-install web --all-plugins --dev
+      #     working_directory: ~/girder
+      - run:
+          name: Create build directory and various subdirectories
+          # command: mkdir -p build
+          command: mkdir -p build/test/coverage/web_temp && mkdir -p build/test/coverage/web
+          working_directory: ~/girder
+      - run:
+          name: CMake
+          command: cmake ..
+          working_directory: ~/girder/build
+      - run:
+          name: make
+          command: make -j 3
+          working_directory: ~/girder/build
+      # - run:
+      #     name: CTest
+      #     command: ctest -j 3 -VV -L girder_integration
+      #     working_directory: ~/girder/build
+      - run:
+          name: CTest full
+          command: ctest -j 3 --output-on-failure
+          working_directory: ~/girder/build
+      # - run:
+      #     name: Install Codecov client
+      #     command: pip install codecov
+
+
 workflows:
   version: 2
   test_all:
     jobs:
-      - py2_serverInstall_serverTest
-      - py3_serverInstall
-      - py3_serverTest:
-          requires:
-            - py3_serverInstall
-      - py3_webBuild_webTest:
-          requires:
-            - py3_serverInstall
+      # - py2_serverInstall_serverTest
+      # - py3_serverInstall
+      # - py3_serverTest:
+      #     requires:
+      #       - py3_serverInstall
+      # - py3_webBuild_webTest:
+      #     requires:
+      #       - py3_serverInstall
+      - py3_integrationTests
