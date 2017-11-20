@@ -36,6 +36,12 @@ elseif(test_group STREQUAL browser)
   )
 
   set(_test_labels "girder_browser")
+elseif(test_group STREQUAL coverage)
+  set(cfg_options
+    -DPYTHON_VERSION=$ENV{PYTHON_VERSION}
+    -DPYTHON_EXECUTABLE=$ENV{PYTHON_EXECUTABLE}
+  )
+  set(_test_labels "coverage")
 endif()
 
 ctest_start("Continuous")
