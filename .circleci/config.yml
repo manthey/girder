@@ -202,27 +202,20 @@ jobs:
           name: Install Girder via ansible
           # command: ansible-playbook -i "localhost," -c local examples/girder-dev-environment/site.yml --extra-vars="girder_version=master"
           command: ansible-playbook -i "localhost," -c local examples/girder-dev-environment/site.yml --extra-vars="girder_version='$CIRCLE_BRANCH' girder_repo='$CIRCLE_REPOSITORY_URL'"
-          # command: ansible-playbook -i "localhost," -c local examples/girder-dev-environment/site.yml --extra-vars="girder_version='$CIRCLE_BRANCH' girder_repo='$CIRCLE_REPOSITORY_URL' girder_python='`which python3`' girder_pip='`which pip3` girder_virtualenv='"
+          # command: ansible-playbook -i "localhost," -c local examples/girder-dev-environment/site.yml --extra-vars="girder_version='$CIRCLE_BRANCH' girder_repo='$CIRCLE_REPOSITORY_URL' girder_virtualenv=python3"
           working_directory: girder/devops/ansible
           environment:
             ANSIBLE_ROLES_PATH: roles:examples/girder-dev-environment/roles
       - run:
-          name: Include virtualenv in path
+          name: Activate virtualenv
           command: echo '. /home/circleci/.virtualenvs/girder/bin/activate' >> $BASH_ENV
-          # command: echo 'export PATH=/home/circleci/.virtualenvs/girder/bin:$PATH' >> $BASH_ENV
           # This doesn't work:
-          # name: Activate virtualenv
           # command: source ~/.virtualenvs/girder/bin/activate
       - run:
           name: Install all pip modules
           # sftp and python client aren't installed by the ansible example
           command: pip install .[plugins,sftp] clients/python -r requirements-dev.txt
           working_directory: ~/girder
-      # This may not be necessary
-      # - run:
-      #     name: Install all plugins
-      #     command: girder-install web --all-plugins --dev
-      #     working_directory: ~/girder
       - run:
           name: Create build directory and various subdirectories
           # command: mkdir -p build
@@ -236,10 +229,10 @@ jobs:
           name: make
           command: make -j 3
           working_directory: ~/girder/build
-      # - run:
-      #     name: CTest
-      #     command: ctest -j 3 -VV -L girder_integration
-      #     working_directory: ~/girder/build
+      - run:
+          name: CTest
+          command: ctest -j 3 -VV -L girder_integration
+          working_directory: ~/girder/build
       - run:
           name: CTest full
           command: ctest -j 3 --output-on-failure
