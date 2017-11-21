@@ -809,13 +809,13 @@ girderTest.testRoute = function (route, hasDialog, testFunc) {
         girder.router.navigate(route, {trigger: true});
     });
 
+    if (testFunc) {
+        waitsFor(testFunc, 'testRoute: test function failed, route=' + route);
+    }
     if (hasDialog) {
         girderTest.waitForDialog('testRoute: waitForDialog failed, route=' + route);
     } else {
         girderTest.waitForLoad('testRoute: waitForLoad failed, route=' + route);
-    }
-    if (testFunc) {
-        waitsFor(testFunc, 'testRoute: test function failed, route=' + route);
     }
 };
 
