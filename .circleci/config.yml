@@ -125,8 +125,6 @@ jobs:
           root: /home/circleci/project
           paths:
             - girder
-            - girder_build
-            - girder_env
 
   py3_webBuild_webTest:
     docker:
@@ -177,7 +175,10 @@ jobs:
           root: /home/circleci/project
           paths:
             - girder/.coverage.*
+            - girder/node_modules
             - girder/build/test/coverage/web_temp/*.cvg
+            - girder_build
+            - girder_env
 
   py2_integrationTests:
     machine: true
@@ -275,28 +276,27 @@ jobs:
       - run:
           name: Activate virtual environment
           command: echo "source $CIRCLE_WORKING_DIRECTORY/girder_env/bin/activate" >> $BASH_ENV
+      # - run:
+      #     # We should be able to alter the ci_test.cmake to do this
+      #     name: Run CMake
+      #     command: cmake ../girder -DPYTHON_VERSION=3.4 -DPYTHON_EXECUTABLE=/home/circleci/project/girder_env/bin/python -DVIRTUALENV_EXECUTABLE=/home/circleci/project/girder_env/bin/virtualenv
       - run:
           name: Run CTest
           command: ctest -VV -S "$CIRCLE_WORKING_DIRECTORY/girder/.circleci/ci_test.cmake"
           environment:
             TEST_GROUP: coverage
-            PYTHON_VERSION: 2.7  # 3.4
+            PYTHON_VERSION: 2.7
             PYTHON_EXECUTABLE: /home/circleci/project/girder_env/bin/python
             JASMINE_TIMEOUT: 15000
             BABEL_ENV: cover
+            BUILD_JAVASCRIPT_TESTS: OFF
           working_directory: girder_build
-      - run:
-          name: Install CMake output formatter
-          command: pip install scikit-ci-addons==0.15.0
-      - run:
-          name: Output CTest results in JUnit format
-          command: ci_addons ctest_junit_formatter girder_build > girder/build/test/coverage/CTest.xml
       - run:
           name: Install Codecov client
           command: pip install codecov
       - run:
           name: Upload coverage
-          command: codecov --disable search pycov gcov --file $CIRCLE_WORKING_DIRECTORY/girder/build/test/coverage/CTest.xml
+          command: codecov --disable search pycov gcov --file $CIRCLE_WORKING_DIRECTORY/girder/build/test/coverage/web/js_coverage.xml $CIRCLE_WORKING_DIRECTORY/girder/build/test/coverage/server.xml
           working_directory: girder
 
   py3_integrationTests:
@@ -381,13 +381,6 @@ jobs:
           environment:
             JASMINE_TIMEOUT: 15000
             BABEL_ENV: cover
-      # - run:
-      #     name: CTest full
-      #     command: ctest -j 3 --output-on-failure
-      #     working_directory: girder_build
-      #     environment:
-      #       JASMINE_TIMEOUT: 15000
-      #       BABEL_ENV: cover
       - run:
           name: Rename javascript coverage files to avoid conflicts
           command: for file in *.cvg; do mv "$file" "${file%.cvg}integration.cvg"; done
@@ -421,19 +414,14 @@ jobs:
             PYTHON_EXECUTABLE: /home/circleci/project/girder_env/bin/python
             JASMINE_TIMEOUT: 15000
             BABEL_ENV: cover
+            BUILD_JAVASCRIPT_TESTS: ON
           working_directory: girder_build
-      - run:
-          name: Install CMake output formatter
-          command: pip install scikit-ci-addons==0.15.0
-      - run:
-          name: Output CTest results in JUnit format
-          command: ci_addons ctest_junit_formatter girder_build > girder/build/test/coverage/CTest.xml
       - run:
           name: Install Codecov client
           command: pip install codecov
       - run:
           name: Upload coverage
-          command: codecov --disable search pycov gcov --file $CIRCLE_WORKING_DIRECTORY/girder/build/test/coverage/CTest.xml
+          command: codecov --disable search pycov gcov --file $CIRCLE_WORKING_DIRECTORY/girder/build/test/coverage/web/js_coverage.xml $CIRCLE_WORKING_DIRECTORY/girder/build/test/coverage/server.xml
           working_directory: girder
 
 workflows:
