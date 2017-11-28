@@ -296,7 +296,7 @@ jobs:
           command: pip install codecov
       - run:
           name: Upload coverage
-          command: codecov --disable search pycov gcov --file $CIRCLE_WORKING_DIRECTORY/girder/build/test/coverage/web/js_coverage.xml $CIRCLE_WORKING_DIRECTORY/girder/build/test/coverage/server.xml
+          command: codecov --disable search pycov gcov --file $CIRCLE_WORKING_DIRECTORY/girder/build/test/coverage/server.xml
           working_directory: girder
 
   py3_integrationTests:
