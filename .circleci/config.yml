@@ -186,6 +186,7 @@ jobs:
       - run:
           name: Reduce workspace size
           command: |
+            find . | grep -E "(__pycache__|\.pyc|\.pyo$)" | xargs rm -rf
             pyclean girder
             pyclean girder_build
             pyclean girder_env
