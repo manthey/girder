@@ -47,7 +47,12 @@ jobs:
             PYTHON_EXECUTABLE: /home/circleci/project/girder_env/bin/python
             VIRTUALENV_EXECUTABLE: /home/circleci/project/girder_env/bin/virtualenv
           working_directory: girder_build
-
+      - run:
+          name: Reduce workspace size
+          command: |
+            pyclean girder
+            pyclean girder_env
+            pyclean girder_build
       - persist_to_workspace:
           root: /home/circleci/project
           paths:
@@ -83,10 +88,14 @@ jobs:
             pip install -e girder[plugins,sftp]
             pip install -e girder/clients/python
             pip install -r girder/requirements-dev.txt
+      - run:
+          name: Reduce workspace size
+          command: |
+            pyclean girder
+            pyclean girder_env
       - save_cache:
           paths: girder_env
           key: venv-py3-{{ arch }}-{{ checksum "girder/setup.py" }}-{{ checksum "girder/requirements-dev.txt" }}-test1
-
       - persist_to_workspace:
           root: /home/circleci/project
           paths:
@@ -143,6 +152,9 @@ jobs:
       - restore_cache:
           key: npm-{{ arch }}-{{ checksum "girder/package-lock.json" }}
       - run:
+          name: Link node into the /usr/local/bin directory so packaging tests will use the default python
+          command: sudo ln /usr/bin/node /usr/local/bin/node
+      - run:
           name: Build Girder web client
           command: girder-install web --all-plugins --dev | cat
           environment:
@@ -162,6 +174,7 @@ jobs:
             TEST_GROUP: browser
             PYTHON_VERSION: 3.4
             PYTHON_EXECUTABLE: /home/circleci/project/girder_env/bin/python
+            VIRTUALENV_EXECUTABLE: /home/circleci/project/girder_env/bin/python3 -m venv
             JASMINE_TIMEOUT: 15000
             BABEL_ENV: cover
           working_directory: girder_build
@@ -170,7 +183,12 @@ jobs:
           name: Rename javascript coverage files to avoid conflicts
           command: for file in *.cvg; do mv "$file" "${file%.cvg}webbuild.cvg"; done
           working_directory: girder/build/test/coverage/web_temp
-
+      - run:
+          name: Reduce workspace size
+          command: |
+            pyclean girder
+            pyclean girder_build
+            pyclean girder_env
       - persist_to_workspace:
           root: /home/circleci/project
           paths:
@@ -188,6 +206,16 @@ jobs:
       - checkout:
           path: girder
       - run:
+          name: Get rid of existing versions of Mongo
+          command: sudo rm -f /etc/apt/sources.list.d/*mongo* && sudo apt-get remove mongodb-org mongodb-org-tools mongodb-org-shell mongodb-org-server mongodb-org-mongos || true
+      - run:
+          # This has to be done in a python 2 context
+          name: install node-gyp
+          command: npm install -g node-gyp
+      - run:
+          name: allow boto to work with python 3
+          command: sudo rm -f /etc/boto.cfg
+      - run:
           name: Install ansible
           command: pip install ansible
       - run:
@@ -197,11 +225,8 @@ jobs:
           environment:
             ANSIBLE_ROLES_PATH: roles:examples/girder-dev-environment/roles
       - run:
-          name: Get rid of existing versions of Mongo
-          command: sudo rm -f /etc/apt/sources.list.d/*mongo* && sudo apt-get remove mongodb-org mongodb-org-tools mongodb-org-shell mongodb-org-server mongodb-org-mongos || true
-      - run:
           name: Install Girder via ansible
-          command: ansible-playbook -i "localhost," -c local examples/girder-dev-environment/site.yml --extra-vars="{'girder_version':'$CIRCLE_BRANCH', 'girder_repo':'$CIRCLE_REPOSITORY_URL', 'girder_path':'$CIRCLE_WORKING_DIRECTORY/girder', 'girder_clone':false, 'girder_update':false, 'girder_web':false, 'mongodb_version':'2.6.12'}"
+          command: pyenv exec ansible-playbook -i "localhost," -c local examples/girder-dev-environment/site.yml --extra-vars="{'girder_version':'$CIRCLE_BRANCH', 'girder_repo':'$CIRCLE_REPOSITORY_URL', 'girder_path':'$CIRCLE_WORKING_DIRECTORY/girder', 'girder_clone':false, 'girder_update':false, 'girder_web':false, 'mongodb_version':'2.6.12'}"
           working_directory: girder/devops/ansible
           environment:
             ANSIBLE_ROLES_PATH: roles:examples/girder-dev-environment/roles
@@ -211,7 +236,7 @@ jobs:
       - run:
           name: Install all pip modules
           # sftp and python client aren't installed by the ansible example
-          command: pip install .[plugins,sftp] clients/python -r requirements-dev.txt
+          command: pip install -e .[plugins,sftp] clients/python -r requirements-dev.txt
           working_directory: girder
       - run:
           name: Create Girder build directory
@@ -227,11 +252,9 @@ jobs:
             - BABEL_ENV: cover
       - run:
           name: CMake
-          command: cmake ../girder
+          command: cmake ../girder -DPYTHON_EXECUTABLE=/home/circleci/.virtualenvs/girder/bin/python -DVIRTUALENV_EXECUTABLE=/home/circleci/.virtualenvs/girder/bin/virtualenv
           working_directory: girder_build
           environment:
-            # PYTHON_VERSION: 2.7  # 3.4
-            # PYTHON_EXECUTABLE: /home/circleci/project/girder_env/bin/python
             JASMINE_TIMEOUT: 15000
             BABEL_ENV: cover
       - run:
@@ -349,7 +372,7 @@ jobs:
       - run:
           name: Install all pip modules
           # sftp and python client aren't installed by the ansible example
-          command: pip install .[plugins,sftp] clients/python -r requirements-dev.txt
+          command: pip install -e .[plugins,sftp] clients/python -r requirements-dev.txt
           working_directory: girder
       - run:
           name: Create Girder build directory
