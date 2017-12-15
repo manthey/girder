@@ -81,6 +81,7 @@ install_reqs = [
 extras_reqs = {
     'celery_jobs': ['celery'],
     'dicom_viewer': ['pydicom'],
+    'fuse': ['fusepy>=2.0.4'],
     'geospatial': ['geojson'],
     'item_tasks': ['ctk-cli'],
     'ldap': ['pyldap'],
